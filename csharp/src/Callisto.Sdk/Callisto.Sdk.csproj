@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Callisto.Sdk</RootNamespace>
+    <AssemblyName>Callisto.Sdk</AssemblyName>
+
+    <PackageId>Callisto.Sdk</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>Callisto</Authors>
+    <Description>Official Callisto messaging API SDK for .NET (SMS, OTP, WhatsApp, Notify).</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+
+</Project>

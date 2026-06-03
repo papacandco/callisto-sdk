@@ -2,15 +2,18 @@
 
 Official client SDKs for the **Callisto messaging API** — send SMS, one-time passwords (OTP), and WhatsApp messages, publish multi-channel notifications, and check your account balance.
 
-This repository contains three feature-equivalent implementations:
+This repository contains six feature-equivalent implementations:
 
-| Language                | Package         | Min. version | Detailed docs                         |
-| ----------------------- | --------------- | ------------ | ------------------------------------- |
-| JavaScript / TypeScript | `@callisto/sdk` | Node 18+     | [js/README.md](js/README.md)          |
-| Python                  | `callisto-sdk`  | Python 3.9+  | [python/README.md](python/README.md)  |
-| PHP                     | `callisto/sdk`  | PHP 8.1+     | [php/README.md](php/README.md)        |
+| Language                | Package                     | Min. version | Detailed docs                        |
+| ----------------------- | --------------------------- | ------------ | ------------------------------------ |
+| JavaScript / TypeScript | `@callisto/sdk`             | Node 18+     | [js/README.md](js/README.md)         |
+| Python                  | `callisto-sdk`              | Python 3.9+  | [python/README.md](python/README.md) |
+| PHP                     | `callisto/sdk`              | PHP 8.1+     | [php/README.md](php/README.md)       |
+| C#                      | `Callisto.Sdk`              | .NET 8+      | [csharp/README.md](csharp/README.md) |
+| Ruby                    | `callisto-sdk`              | Ruby 3.0+    | [ruby/README.md](ruby/README.md)     |
+| Java                    | `com.callisto:callisto-sdk` | Java 11+     | [java/README.md](java/README.md)     |
 
-All three target the same API (`https://api.callistosignal.com/v1`) and expose the same surface, so concepts transfer directly between languages.
+All six target the same API (`https://api.callistosignal.com/v1`) and expose the same surface, so concepts transfer directly between languages.
 
 ## What's in the API
 
@@ -33,6 +36,19 @@ pip install callisto-sdk
 
 # PHP
 composer require callisto/sdk
+
+# C# (.NET 8+)
+dotnet add package Callisto.Sdk
+
+# Ruby
+gem install callisto-sdk
+
+# Java (Maven)
+# <dependency>
+#   <groupId>com.callisto</groupId>
+#   <artifactId>callisto-sdk</artifactId>
+#   <version>0.1.0</version>
+# </dependency>
 ```
 
 ## Configuration
@@ -86,9 +102,52 @@ $balance = $callisto->balance()->get();
 $callisto->sms()->send(sender: 'Acme', to: '+2250700000000', message: 'Welcome to Acme!');
 ```
 
+### C#
+
+```csharp
+using Callisto.Sdk;
+
+using var client = new CallistoClient(clientId: "your-client-id", apiKey: "your-api-key");
+
+var balance = client.Balance.Get();
+Console.WriteLine($"{balance.Credit} {balance.Currency}");
+
+client.Sms.Send(sender: "Acme", to: "+2250700000000", message: "Welcome to Acme!");
+```
+
+### Ruby
+
+```ruby
+require "callisto"
+
+Callisto::Client.new(client_id: "your-client-id", api_key: "your-api-key") do |callisto|
+  balance = callisto.balance.get
+  puts "#{balance.credit} #{balance.currency}"
+
+  callisto.sms.send(sender: "Acme", to: "+2250700000000", message: "Welcome to Acme!")
+end
+```
+
+### Java
+
+```java
+import com.callisto.sdk.CallistoClient;
+import com.callisto.sdk.resources.SmsSendRequest;
+
+try (CallistoClient client = new CallistoClient("your-client-id", "your-api-key")) {
+    var balance = client.balance().get();
+    System.out.println(balance.getCredit() + " " + balance.getCurrency());
+
+    client.sms().send(SmsSendRequest.builder()
+        .sender("Acme").to("+2250700000000").message("Welcome to Acme!").build());
+}
+```
+
+> **Java note:** the multi-channel resource accessor is `client.notifications()` rather than `notify()`, because `notify()` is reserved by `java.lang.Object`. Every other resource keeps its shared name.
+
 ## Shared concepts
 
-These behave the same across all three SDKs (see each language README for the exact types and method names):
+These behave the same across all six SDKs (see each language README for the exact types and method names):
 
 - **Pagination** — `list` methods return a `Paginated` container exposing `items`, `total`, `per_page`, `current_page`, `next`, `previous`, and `total_pages`. Follow `next` (null on the last page) to walk forward.
 - **Typed read models** — `get*`/`list*` methods return typed models; they tolerate unknown fields, so new API fields won't break deserialization. (`whatsapp.getQr` / `whatsapp.getStatus` return the raw payload.)
@@ -102,6 +161,9 @@ The READMEs below document every method, parameter, model field, enum, and error
 - **[JavaScript / TypeScript →](js/README.md)**
 - **[Python →](python/README.md)**
 - **[PHP →](php/README.md)**
+- **[C# →](csharp/README.md)**
+- **[Ruby →](ruby/README.md)**
+- **[Java →](java/README.md)**
 
 ## License
 

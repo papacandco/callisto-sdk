@@ -1,0 +1,36 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{97BBEBDC-E8EE-4AC2-8A2C-361F27F820D0}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Callisto.Sdk", "src\Callisto.Sdk\Callisto.Sdk.csproj", "{99EB702F-6453-44C3-B841-1ABBAB4CD4E4}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{DA9F4202-E3FD-4ECA-9618-3FF0B23FBC4A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Callisto.Sdk.Tests", "tests\Callisto.Sdk.Tests\Callisto.Sdk.Tests.csproj", "{3B75EC72-4116-4CAB-90C4-F91272ADA3BA}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{99EB702F-6453-44C3-B841-1ABBAB4CD4E4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{99EB702F-6453-44C3-B841-1ABBAB4CD4E4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{99EB702F-6453-44C3-B841-1ABBAB4CD4E4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{99EB702F-6453-44C3-B841-1ABBAB4CD4E4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3B75EC72-4116-4CAB-90C4-F91272ADA3BA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3B75EC72-4116-4CAB-90C4-F91272ADA3BA}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3B75EC72-4116-4CAB-90C4-F91272ADA3BA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3B75EC72-4116-4CAB-90C4-F91272ADA3BA}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{99EB702F-6453-44C3-B841-1ABBAB4CD4E4} = {97BBEBDC-E8EE-4AC2-8A2C-361F27F820D0}
+		{3B75EC72-4116-4CAB-90C4-F91272ADA3BA} = {DA9F4202-E3FD-4ECA-9618-3FF0B23FBC4A}
+	EndGlobalSection
+EndGlobal
