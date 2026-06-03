@@ -2,18 +2,19 @@
 
 Official client SDKs for the **Callisto messaging API** — send SMS, one-time passwords (OTP), and WhatsApp messages, publish multi-channel notifications, and check your account balance.
 
-This repository contains six feature-equivalent implementations:
+This repository contains seven feature-equivalent implementations:
 
-| Language                | Package                     | Min. version | Detailed docs                        |
-| ----------------------- | --------------------------- | ------------ | ------------------------------------ |
-| JavaScript / TypeScript | `@callisto/sdk`             | Node 18+     | [js/README.md](js/README.md)         |
-| Python                  | `callisto-sdk`              | Python 3.9+  | [python/README.md](python/README.md) |
-| PHP                     | `callisto/sdk`              | PHP 8.1+     | [php/README.md](php/README.md)       |
-| C#                      | `Callisto.Sdk`              | .NET 8+      | [csharp/README.md](csharp/README.md) |
-| Ruby                    | `callisto-sdk`              | Ruby 3.0+    | [ruby/README.md](ruby/README.md)     |
-| Java                    | `com.callisto:callisto-sdk` | Java 11+     | [java/README.md](java/README.md)     |
+| Language                | Package                                | Min. version | Detailed docs                        |
+| ----------------------- | -------------------------------------- | ------------ | ------------------------------------ |
+| JavaScript / TypeScript | `@callisto/sdk`                        | Node 18+     | [js/README.md](js/README.md)         |
+| Python                  | `callisto-sdk`                         | Python 3.9+  | [python/README.md](python/README.md) |
+| PHP                     | `callisto/sdk`                         | PHP 8.1+     | [php/README.md](php/README.md)       |
+| C#                      | `Callisto.Sdk`                         | .NET 8+      | [csharp/README.md](csharp/README.md) |
+| Ruby                    | `callisto-sdk`                         | Ruby 3.0+    | [ruby/README.md](ruby/README.md)     |
+| Java                    | `com.callisto:callisto-sdk`            | Java 11+     | [java/README.md](java/README.md)     |
+| Go                      | `github.com/papacandco/callisto-sdk/go`| Go 1.21+     | [go/README.md](go/README.md)         |
 
-All six target the same API (`https://api.callistosignal.com/v1`) and expose the same surface, so concepts transfer directly between languages.
+All seven target the same API (`https://api.callistosignal.com/v1`) and expose the same surface, so concepts transfer directly between languages.
 
 ## What's in the API
 
@@ -49,6 +50,9 @@ gem install callisto-sdk
 #   <artifactId>callisto-sdk</artifactId>
 #   <version>0.1.0</version>
 # </dependency>
+
+# Go
+go get github.com/papacandco/callisto-sdk/go
 ```
 
 ## Configuration
@@ -145,9 +149,30 @@ try (CallistoClient client = new CallistoClient("your-client-id", "your-api-key"
 
 > **Java note:** the multi-channel resource accessor is `client.notifications()` rather than `notify()`, because `notify()` is reserved by `java.lang.Object`. Every other resource keeps its shared name.
 
+### Go
+
+```go
+import callisto "github.com/papacandco/callisto-sdk/go"
+
+client, err := callisto.NewClient(callisto.Options{ClientID: "your-client-id", APIKey: "your-api-key"})
+if err != nil {
+    log.Fatal(err)
+}
+defer client.Close()
+
+ctx := context.Background()
+
+bal, _ := client.Balance.Get(ctx, callisto.BalanceParams{})
+fmt.Printf("%v %s\n", bal.Credit, bal.Currency)
+
+client.SMS.Send(ctx, callisto.SendSMSParams{Sender: "Acme", To: []string{"+2250700000000"}, Message: "Welcome to Acme!"})
+```
+
+> **Go note:** every resource method takes a `context.Context` as its first argument (for cancellation, deadlines, and tracing) — the one idiomatic divergence from the other SDKs' signatures.
+
 ## Shared concepts
 
-These behave the same across all six SDKs (see each language README for the exact types and method names):
+These behave the same across all seven SDKs (see each language README for the exact types and method names):
 
 - **Pagination** — `list` methods return a `Paginated` container exposing `items`, `total`, `per_page`, `current_page`, `next`, `previous`, and `total_pages`. Follow `next` (null on the last page) to walk forward.
 - **Typed read models** — `get*`/`list*` methods return typed models; they tolerate unknown fields, so new API fields won't break deserialization. (`whatsapp.getQr` / `whatsapp.getStatus` return the raw payload.)
@@ -191,6 +216,7 @@ The READMEs below document every method, parameter, model field, enum, and error
 - **[C# →](csharp/README.md)**
 - **[Ruby →](ruby/README.md)**
 - **[Java →](java/README.md)**
+- **[Go →](go/README.md)**
 
 ## License
 
