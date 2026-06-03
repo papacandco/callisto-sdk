@@ -1,0 +1,32 @@
+name: Ruby SDK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "ruby/**"
+      - ".github/workflows/ruby.yml"
+  pull_request:
+    paths:
+      - "ruby/**"
+      - ".github/workflows/ruby.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ["3.0", "3.3"]
+    name: ruby ${{ matrix.ruby }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+          working-directory: ruby
+
+      - run: bundle exec rspec
+        working-directory: ruby

@@ -1,0 +1,31 @@
+name: C# SDK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "csharp/**"
+      - ".github/workflows/csharp.yml"
+  pull_request:
+    paths:
+      - "csharp/**"
+      - ".github/workflows/csharp.yml"
+
+defaults:
+  run:
+    working-directory: csharp
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: dotnet 8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - run: dotnet restore
+      - run: dotnet build --no-restore --configuration Release
+      - run: dotnet test --no-build --configuration Release --verbosity normal
