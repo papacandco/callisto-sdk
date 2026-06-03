@@ -31,9 +31,12 @@ class NotifyResource:
         }
         present = {k: v for k, v in blocks.items() if v}
         if not present:
-            raise ValidationError(
+            err = ValidationError(
                 "At least one event block (email, sms, mobile_push, web_push, "
                 "webhook, messaging, real_time) must be provided."
             )
+            if self._t.reporter is not None:
+                self._t.reporter.capture_exception(err)
+            raise err
         body = {"topic": topic, **present}
         return NotifyResult.from_dict(self._t.request("POST", "/notify/send", body=body))

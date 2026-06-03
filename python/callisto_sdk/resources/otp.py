@@ -24,7 +24,10 @@ class OtpResource:
     ) -> SendOtpResult:
         provider_value = provider.value if isinstance(provider, OtpProvider) else provider
         if provider_value == OtpProvider.WHATSAPP.value and not instance_code:
-            raise ValidationError("instance_code is required when provider is whatsapp")
+            err = ValidationError("instance_code is required when provider is whatsapp")
+            if self._t.reporter is not None:
+                self._t.reporter.capture_exception(err)
+            raise err
         body: dict[str, Any] = {"to": to, "message": message}
         if sender is not None:
             body["sender"] = sender

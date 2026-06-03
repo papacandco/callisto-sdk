@@ -1,6 +1,8 @@
 package com.callisto.sdk;
 
 import com.callisto.sdk.http.Transport;
+import com.callisto.sdk.reporting.ErrorReporter;
+import com.callisto.sdk.reporting.ErrorSender;
 import com.callisto.sdk.resources.Balance;
 import com.callisto.sdk.resources.Notify;
 import com.callisto.sdk.resources.Otp;
@@ -10,6 +12,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.net.http.HttpClient;
 import java.time.Duration;
+import java.util.Map;
 
 /**
  * Entry point for the Callisto SDK.
@@ -26,6 +29,7 @@ import java.time.Duration;
 public class CallistoClient implements AutoCloseable {
 
     private final Transport transport;
+    private final ErrorReporter errorReporter;
     private final Balance balance;
     private final Sms sms;
     private final Otp otp;
@@ -51,7 +55,7 @@ public class CallistoClient implements AutoCloseable {
      * @param timeout  optional request timeout (defaults to 30s).
      */
     public CallistoClient(String clientId, String apiKey, String baseUrl, Duration timeout) {
-        this(Config.resolve(clientId, apiKey, baseUrl, timeout), null, null);
+        this(Config.resolve(clientId, apiKey, baseUrl, timeout), null, null, null);
     }
 
     /**
@@ -61,19 +65,60 @@ public class CallistoClient implements AutoCloseable {
      */
     public CallistoClient(String clientId, String apiKey, String baseUrl, Duration timeout,
                           HttpClient httpClient, ObjectMapper mapper) {
-        this(Config.resolve(clientId, apiKey, baseUrl, timeout), httpClient, mapper);
+        this(Config.resolve(clientId, apiKey, baseUrl, timeout), httpClient, mapper, null);
     }
 
-    private CallistoClient(Config config, HttpClient httpClient, ObjectMapper mapper) {
+    /**
+     * Creates a client with full error-reporting configuration and an injectable
+     * {@link ErrorSender} (advanced use / testing). Pass {@code null} for any optional argument
+     * to fall back to defaults / environment variables.
+     */
+    public CallistoClient(String clientId, String apiKey, String baseUrl, Duration timeout,
+                          HttpClient httpClient, ObjectMapper mapper,
+                          String errorDsn, Boolean captureUnhandled, String environment,
+                          ErrorSender errorSender) {
+        this(Config.resolve(clientId, apiKey, baseUrl, timeout, errorDsn, captureUnhandled, environment),
+                httpClient, mapper, errorSender);
+    }
+
+    private CallistoClient(Config config, HttpClient httpClient, ObjectMapper mapper,
+                           ErrorSender errorSender) {
         ObjectMapper resolvedMapper = mapper != null ? mapper : new ObjectMapper();
         this.transport = httpClient != null
                 ? new Transport(config, httpClient, resolvedMapper)
                 : new Transport(config);
+
+        this.errorReporter = new ErrorReporter(
+                config.getErrorDsn(), config.getEnvironment(), errorSender, resolvedMapper);
+        if (errorReporter.isEnabled()) {
+            transport.setReporter(errorReporter);
+        }
+
         this.balance = new Balance(transport);
         this.sms = new Sms(transport);
         this.otp = new Otp(transport);
         this.whatsapp = new WhatsApp(transport);
         this.notify = new Notify(transport);
+
+        if (config.isCaptureUnhandled() && errorReporter.isEnabled()) {
+            installUncaughtHandler();
+        }
+    }
+
+    private void installUncaughtHandler() {
+        final Thread.UncaughtExceptionHandler previous =
+                Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
+            try {
+                errorReporter.captureException(throwable, "fatal", null);
+                errorReporter.flush();
+            } catch (Throwable ignored) {
+                // Never let reporting disturb the platform's default behavior.
+            }
+            if (previous != null) {
+                previous.uncaughtException(thread, throwable);
+            }
+        });
     }
 
     public Balance balance() {
@@ -102,8 +147,49 @@ public class CallistoClient implements AutoCloseable {
         return notify;
     }
 
+    /**
+     * The error reporter (advanced use). Reachable for direct configuration; the three
+     * {@code capture*} / {@code setUser} client methods are the supported surface. Always
+     * non-null; a no-op when no DSN is configured.
+     */
+    public ErrorReporter errorReporter() {
+        return errorReporter;
+    }
+
+    /**
+     * Reports an exception to the error-tracking endpoint at {@code level = error}.
+     * No-op when no DSN is configured. Never throws.
+     */
+    public void captureException(Throwable t) {
+        errorReporter.captureException(t);
+    }
+
+    /** Reports an exception at the given level. No-op without a DSN. Never throws. */
+    public void captureException(Throwable t, String level, Map<String, Object> extra) {
+        errorReporter.captureException(t, level, extra);
+    }
+
+    /**
+     * Reports a plain message to the error-tracking endpoint at {@code level = info}.
+     * No-op when no DSN is configured. Never throws.
+     */
+    public void captureMessage(String message) {
+        errorReporter.captureMessage(message);
+    }
+
+    /** Reports a plain message at the given level. No-op without a DSN. Never throws. */
+    public void captureMessage(String message, String level, Map<String, Object> extra) {
+        errorReporter.captureMessage(message, level, extra);
+    }
+
+    /** Sets or clears the {@code user} context attached to subsequent reported events. */
+    public void setUser(Map<String, Object> user) {
+        errorReporter.setUser(user);
+    }
+
     @Override
     public void close() {
+        errorReporter.close();
         transport.close();
     }
 }

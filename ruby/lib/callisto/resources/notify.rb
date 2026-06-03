@@ -30,10 +30,12 @@ module Callisto
       present = blocks.reject { |_, v| v.nil? || (v.respond_to?(:empty?) && v.empty?) }
 
       if present.empty?
-        raise ValidationError.new(
+        err = ValidationError.new(
           "At least one event block (email, sms, mobile_push, web_push, " \
           "webhook, messaging, real_time) must be provided."
         )
+        @t.reporter&.capture_exception(err) if @t.respond_to?(:reporter)
+        raise err
       end
 
       body = { "topic" => topic }.merge(present)

@@ -12,11 +12,13 @@ export class OtpResource {
 
   async send(params: SendOtpParams): Promise<SendOtpResult> {
     if (params.provider === OtpProvider.Whatsapp && !params.instance_code) {
-      throw new ValidationError(
+      const err = new ValidationError(
         "instance_code is required when provider is whatsapp",
         400,
         undefined,
       );
+      this.t.report(err, "POST", "/otp/send");
+      throw err;
     }
     const body: Record<string, unknown> = {};
     if (params.to !== undefined) body.to = params.to;

@@ -32,7 +32,12 @@ public class Otp {
         String provider = request.getProvider();
         if (OtpProvider.WHATSAPP.getValue().equals(provider)
                 && (request.getInstanceCode() == null || request.getInstanceCode().isEmpty())) {
-            throw new ValidationException("instanceCode is required when provider is whatsapp");
+            ValidationException ex =
+                    new ValidationException("instanceCode is required when provider is whatsapp");
+            if (transport.reporter() != null) {
+                transport.reporter().captureException(ex);
+            }
+            throw ex;
         }
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("to", request.getTo());

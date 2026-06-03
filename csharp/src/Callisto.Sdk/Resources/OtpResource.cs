@@ -44,7 +44,9 @@ public sealed class OtpResource
     {
         if (provider == OtpProvider.WhatsApp.Value() && string.IsNullOrEmpty(instanceCode))
         {
-            throw new ValidationException("instance_code is required when provider is whatsapp");
+            var error = new ValidationException("instance_code is required when provider is whatsapp");
+            _t.CaptureClientError(error);
+            throw error;
         }
 
         var body = new Dictionary<string, object?>

@@ -5,6 +5,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using Callisto.Sdk.Errors;
+using Callisto.Sdk.Reporting;
 
 namespace Callisto.Sdk.Http;
 
@@ -26,14 +27,25 @@ public sealed class Transport : IDisposable
     private readonly bool _ownsClient;
 
     /// <summary>
+    /// Optional error reporter. When set, transport-originated errors are captured (with
+    /// method/path) immediately before being thrown.
+    /// </summary>
+    public ErrorReporter? Reporter { get; set; }
+
+    /// <summary>
     /// Creates a transport. When <paramref name="httpClient"/> is provided it is used as-is
     /// (Basic auth and timeout are still applied to it). When <paramref name="handler"/> is
     /// provided, an internally-owned <see cref="HttpClient"/> is built on top of it — useful for
     /// injecting a fake handler in tests.
     /// </summary>
-    public Transport(Config config, HttpClient? httpClient = null, HttpMessageHandler? handler = null)
+    public Transport(
+        Config config,
+        HttpClient? httpClient = null,
+        HttpMessageHandler? handler = null,
+        ErrorReporter? reporter = null)
     {
         _config = config;
+        Reporter = reporter;
 
         if (httpClient is not null)
         {
@@ -100,7 +112,9 @@ public sealed class Transport : IDisposable
         }
         catch (Exception exc) when (exc is HttpRequestException or TaskCanceledException or OperationCanceledException)
         {
-            throw new NetworkException($"Request to {url} failed: {exc.Message}");
+            var networkError = new NetworkException($"Request to {url} failed: {exc.Message}");
+            Report(networkError, method, path);
+            throw networkError;
         }
 
         using (response)
@@ -140,11 +154,49 @@ public sealed class Transport : IDisposable
                 }
 
                 object? bodyObj = data.HasValue ? (object)data.Value : content;
-                throw ErrorFactory.FromStatus(status, message, bodyObj, retryAfter);
+                var statusError = ErrorFactory.FromStatus(status, message, bodyObj, retryAfter);
+                Report(statusError, method, path);
+                throw statusError;
             }
 
             return data;
         }
+    }
+
+    /// <summary>
+    /// Captures a client-side error (e.g. resource validation) through the reporter (if any),
+    /// before the caller throws it. Never throws.
+    /// </summary>
+    public void CaptureClientError(Exception error)
+    {
+        var reporter = Reporter;
+        if (reporter is null || !reporter.Enabled)
+        {
+            return;
+        }
+
+        reporter.CaptureException(error);
+    }
+
+    /// <summary>
+    /// Captures a transport-originated error through the reporter (if any), tagging it with the
+    /// HTTP method and path so the reporter sets <c>culprit</c>/<c>request</c>. Never throws and
+    /// never sends the outgoing request body.
+    /// </summary>
+    private void Report(Exception error, HttpMethod method, string path)
+    {
+        var reporter = Reporter;
+        if (reporter is null || !reporter.Enabled)
+        {
+            return;
+        }
+
+        var extra = new Dictionary<string, object?>
+        {
+            ["__method"] = method.Method,
+            ["__path"] = path,
+        };
+        reporter.CaptureException(error, "error", extra);
     }
 
     private static string ReadContent(HttpResponseMessage response)

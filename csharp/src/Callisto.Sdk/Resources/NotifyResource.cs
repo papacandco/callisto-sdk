@@ -52,9 +52,11 @@ public sealed class NotifyResource
 
         if (!any)
         {
-            throw new ValidationException(
+            var error = new ValidationException(
                 "At least one event block (email, sms, mobile_push, web_push, " +
                 "webhook, messaging, real_time) must be provided.");
+            _t.CaptureClientError(error);
+            throw error;
         }
 
         return _t.Request<NotifyResult>(HttpMethod.Post, "/notify/send", body: body);

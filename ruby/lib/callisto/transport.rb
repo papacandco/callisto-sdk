@@ -9,9 +9,15 @@ module Callisto
   # query params and body fields, serializes JSON, and maps non-2xx responses to typed errors.
   class Transport
     # @param config [Config]
-    def initialize(config)
+    # @param reporter [ErrorReporter, nil] optional error reporter; when present, mapped
+    #   status errors and network failures are captured (with method/path) before raising.
+    def initialize(config, reporter: nil)
       @config = config
+      @reporter = reporter
     end
+
+    # @return [ErrorReporter, nil] the error reporter shared with resources, if any.
+    attr_reader :reporter
 
     # Performs an HTTP request and returns the decoded response body.
     #
@@ -28,7 +34,7 @@ module Callisto
 
       req = build_request(method, uri, body)
 
-      response = perform(uri, req)
+      response = perform(uri, req, method, path)
 
       data = decode_body(response)
 
@@ -45,7 +51,7 @@ module Callisto
           raw = response["Retry-After"]
           retry_after = Integer(raw, 10) rescue nil unless raw.nil?
         end
-        raise Callisto.error_from_status(status, message.to_s, data, retry_after)
+        raise capture(Callisto.error_from_status(status, message.to_s, data, retry_after), method, path)
       end
 
       data
@@ -81,7 +87,7 @@ module Callisto
       req
     end
 
-    def perform(uri, req)
+    def perform(uri, req, method, path)
       http = Net::HTTP.new(uri.host, uri.port)
       http.use_ssl = uri.scheme == "https"
       http.open_timeout = @config.timeout
@@ -89,7 +95,16 @@ module Callisto
       http.write_timeout = @config.timeout if http.respond_to?(:write_timeout=)
       http.request(req)
     rescue StandardError => e
-      raise NetworkError.new("Request to #{uri} failed: #{e.message}")
+      raise capture(NetworkError.new("Request to #{uri} failed: #{e.message}"), method, path)
+    end
+
+    # Tags the error with the originating method/path and reports it before it is raised.
+    # Always returns the error so callers can `raise capture(...)`.
+    def capture(error, method, path)
+      error.instance_variable_set(:@callisto_method, method.to_s.upcase)
+      error.instance_variable_set(:@callisto_path, path)
+      @reporter&.capture_exception(error)
+      error
     end
 
     def decode_body(response)

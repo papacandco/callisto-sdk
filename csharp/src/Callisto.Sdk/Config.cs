@@ -5,7 +5,9 @@ namespace Callisto.Sdk;
 /// <summary>
 /// Resolved client configuration. Credentials fall back to environment variables
 /// (<c>CALLISTO_CLIENT_ID</c>, <c>CALLISTO_API_KEY</c>, <c>CALLISTO_BASE_URL</c>) when an
-/// argument is not supplied.
+/// argument is not supplied. Error-reporting settings fall back to
+/// <c>CALLISTO_ERROR_DSN</c>, <c>CALLISTO_CAPTURE_UNHANDLED</c>, and
+/// <c>CALLISTO_ENVIRONMENT</c>.
 /// </summary>
 public sealed class Config
 {
@@ -24,12 +26,36 @@ public sealed class Config
     /// <summary>Request timeout.</summary>
     public TimeSpan Timeout { get; }
 
-    private Config(string clientId, string apiKey, string baseUrl, TimeSpan timeout)
+    /// <summary>
+    /// Error-reporting ingest DSN. When <c>null</c>, error reporting is fully disabled (no-op).
+    /// </summary>
+    public string? ErrorDsn { get; }
+
+    /// <summary>
+    /// When <c>true</c> and a DSN is set, installs the global unhandled-exception handler.
+    /// Defaults to <c>false</c>.
+    /// </summary>
+    public bool CaptureUnhandled { get; }
+
+    /// <summary>Optional environment tag included in <c>context.environment</c>.</summary>
+    public string? Environment { get; }
+
+    private Config(
+        string clientId,
+        string apiKey,
+        string baseUrl,
+        TimeSpan timeout,
+        string? errorDsn,
+        bool captureUnhandled,
+        string? environment)
     {
         ClientId = clientId;
         ApiKey = apiKey;
         BaseUrl = baseUrl;
         Timeout = timeout;
+        ErrorDsn = errorDsn;
+        CaptureUnhandled = captureUnhandled;
+        Environment = environment;
     }
 
     /// <summary>
@@ -41,10 +67,13 @@ public sealed class Config
         string? clientId = null,
         string? apiKey = null,
         string? baseUrl = null,
-        TimeSpan? timeout = null)
+        TimeSpan? timeout = null,
+        string? errorDsn = null,
+        bool? captureUnhandled = null,
+        string? environment = null)
     {
-        clientId = Coalesce(clientId, Environment.GetEnvironmentVariable("CALLISTO_CLIENT_ID"));
-        apiKey = Coalesce(apiKey, Environment.GetEnvironmentVariable("CALLISTO_API_KEY"));
+        clientId = Coalesce(clientId, System.Environment.GetEnvironmentVariable("CALLISTO_CLIENT_ID"));
+        apiKey = Coalesce(apiKey, System.Environment.GetEnvironmentVariable("CALLISTO_API_KEY"));
 
         if (string.IsNullOrEmpty(clientId) || string.IsNullOrEmpty(apiKey))
         {
@@ -55,10 +84,42 @@ public sealed class Config
 
         var resolvedBase = Coalesce(
             baseUrl,
-            Environment.GetEnvironmentVariable("CALLISTO_BASE_URL"),
+            System.Environment.GetEnvironmentVariable("CALLISTO_BASE_URL"),
             DefaultBaseUrl)!.TrimEnd('/');
 
-        return new Config(clientId!, apiKey!, resolvedBase, timeout ?? TimeSpan.FromSeconds(30));
+        var resolvedDsn = Coalesce(
+            errorDsn,
+            System.Environment.GetEnvironmentVariable("CALLISTO_ERROR_DSN"));
+
+        var resolvedCapture = captureUnhandled
+            ?? ParseBool(System.Environment.GetEnvironmentVariable("CALLISTO_CAPTURE_UNHANDLED"));
+
+        var resolvedEnvironment = Coalesce(
+            environment,
+            System.Environment.GetEnvironmentVariable("CALLISTO_ENVIRONMENT"));
+
+        return new Config(
+            clientId!,
+            apiKey!,
+            resolvedBase,
+            timeout ?? TimeSpan.FromSeconds(30),
+            resolvedDsn,
+            resolvedCapture,
+            resolvedEnvironment);
+    }
+
+    private static bool ParseBool(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return false;
+        }
+
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "1" or "true" or "yes" or "on" => true,
+            _ => false,
+        };
     }
 
     private static string? Coalesce(params string?[] values)

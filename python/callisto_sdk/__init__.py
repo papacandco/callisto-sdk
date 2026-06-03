@@ -1,4 +1,5 @@
 from ._config import DEFAULT_BASE_URL
+from ._reporter import ErrorReporter
 from .client import Client
 from .errors import (
     CallistoError, AuthenticationError, ValidationError,
@@ -13,7 +14,7 @@ from .models import (
 
 __version__ = "0.1.0"
 __all__ = [
-    "Client", "DEFAULT_BASE_URL",
+    "Client", "DEFAULT_BASE_URL", "ErrorReporter",
     "CallistoError", "AuthenticationError", "ValidationError",
     "NotFoundError", "RateLimitError", "ApiError", "NetworkError",
     "Balance", "SendSmsResult", "SendOtpResult", "VerifyOtpResult",

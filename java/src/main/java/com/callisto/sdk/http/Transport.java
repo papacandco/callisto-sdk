@@ -1,8 +1,10 @@
 package com.callisto.sdk.http;
 
 import com.callisto.sdk.Config;
+import com.callisto.sdk.errors.CallistoException;
 import com.callisto.sdk.errors.Errors;
 import com.callisto.sdk.errors.NetworkException;
+import com.callisto.sdk.reporting.ErrorReporter;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -31,6 +33,7 @@ public class Transport {
     private final HttpClient httpClient;
     private final ObjectMapper mapper;
     private final String authHeader;
+    private ErrorReporter reporter;
 
     public Transport(Config config) {
         this(config, defaultClient(config), new ObjectMapper());
@@ -47,6 +50,38 @@ public class Transport {
         String credentials = config.getClientId() + ":" + config.getApiKey();
         this.authHeader = "Basic " + Base64.getEncoder()
                 .encodeToString(credentials.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Attaches the shared error reporter so the transport (the single API/network error choke
+     * point) and resources can capture before throwing. Optional; {@code null} disables hooks.
+     */
+    public void setReporter(ErrorReporter reporter) {
+        this.reporter = reporter;
+    }
+
+    /** The shared error reporter, or {@code null} when reporting is disabled. */
+    public ErrorReporter reporter() {
+        return reporter;
+    }
+
+    /**
+     * Captures an exception via the reporter (if any), tagging it with the originating HTTP
+     * {@code method} and {@code path} so the reporter sets {@code culprit} and {@code request}.
+     * Never throws.
+     */
+    public void capture(Throwable t, String method, String path) {
+        if (reporter == null) {
+            return;
+        }
+        Map<String, Object> extra = new LinkedHashMap<>();
+        if (method != null) {
+            extra.put("__method", method);
+        }
+        if (path != null) {
+            extra.put("__path", path);
+        }
+        reporter.captureException(t, "error", extra);
     }
 
     private static HttpClient defaultClient(Config config) {
@@ -96,10 +131,15 @@ public class Transport {
         try {
             response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
         } catch (IOException e) {
-            throw new NetworkException("Request to " + url + " failed: " + e.getMessage(), e);
+            NetworkException ex = new NetworkException("Request to " + url + " failed: " + e.getMessage(), e);
+            capture(ex, method, path);
+            throw ex;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new NetworkException("Request to " + url + " was interrupted: " + e.getMessage(), e);
+            NetworkException ex =
+                    new NetworkException("Request to " + url + " was interrupted: " + e.getMessage(), e);
+            capture(ex, method, path);
+            throw ex;
         }
 
         int status = response.statusCode();
@@ -134,7 +174,9 @@ public class Transport {
                         })
                         .orElse(null);
             }
-            throw Errors.fromStatus(status, message, data, retryAfter);
+            CallistoException ex = Errors.fromStatus(status, message, data, retryAfter);
+            capture(ex, method, path);
+            throw ex;
         }
         return data;
     }

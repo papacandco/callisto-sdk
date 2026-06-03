@@ -29,12 +29,15 @@ const client = new CallistoClient({
 
 ### Options
 
-| Option      | Type     | Required | Default                              | Description                                            |
-| ----------- | -------- | -------- | ------------------------------------ | ------------------------------------------------------ |
-| `clientId`  | `string` | yes\*    | `process.env.CALLISTO_CLIENT_ID`     | Your API client id.                                    |
-| `apiKey`    | `string` | yes\*    | `process.env.CALLISTO_API_KEY`       | Your API key (secret).                                 |
-| `baseUrl`   | `string` | no       | `https://api.callistosignal.com/v1`  | API base URL. Trailing slashes are stripped.           |
-| `timeoutMs` | `number` | no       | `30000`                              | Per-request timeout in milliseconds (via `AbortController`). |
+| Option             | Type      | Required | Default                             | Description                                                                                                        |
+| ------------------ | --------- | -------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `clientId`         | `string`  | yes\*    | `process.env.CALLISTO_CLIENT_ID`    | Your API client id.                                                                                                |
+| `apiKey`           | `string`  | yes\*    | `process.env.CALLISTO_API_KEY`      | Your API key (secret).                                                                                             |
+| `baseUrl`          | `string`  | no       | `https://api.callistosignal.com/v1` | API base URL. Trailing slashes are stripped.                                                                      |
+| `timeoutMs`        | `number`  | no       | `30000`                             | Per-request timeout in milliseconds (via `AbortController`).                                                       |
+| `errorDsn`         | `string`  | no       | none                                | Error-reporting ingest DSN. Absent → error reporting is disabled (no-op). See [Error reporting](#error-reporting). |
+| `captureUnhandled` | `boolean` | no       | `false`                             | Install a global `uncaughtException` / `unhandledRejection` handler.                                              |
+| `environment`      | `string`  | no       | none                                | Optional tag attached to reported events as `context.environment`.                                                |
 
 \* `clientId` and `apiKey` are required, but may be supplied via constructor options **or** environment variables. If neither is resolved, the constructor throws.
 
@@ -47,6 +50,9 @@ Any option you omit is read from the environment:
 | `CALLISTO_CLIENT_ID`  | `clientId`     |
 | `CALLISTO_API_KEY`    | `apiKey`       |
 | `CALLISTO_BASE_URL`   | `baseUrl`      |
+| `CALLISTO_ERROR_DSN`  | `errorDsn`     |
+| `CALLISTO_CAPTURE_UNHANDLED` | `captureUnhandled` (truthy: `1`/`true`) |
+| `CALLISTO_ENVIRONMENT` | `environment` |
 
 ```ts
 // With CALLISTO_CLIENT_ID and CALLISTO_API_KEY set in the environment:
@@ -748,6 +754,61 @@ try {
   }
 }
 ```
+
+## Error reporting
+
+The SDK ships an opt-in, Sentry-style error reporter. When you configure a **DSN**, the SDK auto-captures its own `CallistoError`s (API + network + client-side validation failures) and POSTs them to the Callisto error-tracking ingest endpoint. You can also report your application's own exceptions. Delivery is **background and best-effort** — it never delays, alters, or swallows the original error.
+
+When no DSN is configured the reporter is a complete no-op: nothing is sent and the SDK behaves exactly as before.
+
+### Enabling
+
+Pass `errorDsn` (or set `CALLISTO_ERROR_DSN`). The DSN **is** the full ingest POST URL, e.g. `https://app.callistosignal.com/ingest/<id>?key=<public_key>`:
+
+```ts
+const client = new CallistoClient({
+  clientId: "your_client_id",
+  apiKey: "your_api_key",
+  errorDsn: "https://app.callistosignal.com/ingest/<id>?key=<public_key>",
+  environment: "production", // optional, tagged as context.environment
+});
+```
+
+### Environment variables
+
+| Env var                      | Falls back for     | Notes                                       |
+| ---------------------------- | ------------------ | ------------------------------------------- |
+| `CALLISTO_ERROR_DSN`         | `errorDsn`         | Absent → reporting disabled.                |
+| `CALLISTO_CAPTURE_UNHANDLED` | `captureUnhandled` | Truthy (`1` / `true`) installs the handler. |
+| `CALLISTO_ENVIRONMENT`       | `environment`      | Optional environment tag.                   |
+
+### Public API
+
+```ts
+client.captureException(error, level?, extra?); // level defaults to "error"
+client.captureMessage("something happened", level?, extra?); // level defaults to "info"
+client.setUser({ id: "u1", email: "a@b.com" }); // attach a user to subsequent events; pass null to clear
+await client.close(); // flush in-flight reports (and remove any installed global handlers)
+```
+
+`level` is constrained to `fatal | error | warning | info` (anything else falls back to `error`). `extra` is merged into `context`. The reporter is also reachable directly as `client.errorReporter` for advanced use.
+
+### Opt-in global handler
+
+Set `captureUnhandled: true` (or `CALLISTO_CAPTURE_UNHANDLED=true`) **and** a DSN to install a global handler that captures uncaught errors at `level = "fatal"`:
+
+```ts
+const client = new CallistoClient({
+  errorDsn: process.env.CALLISTO_ERROR_DSN,
+  captureUnhandled: true,
+});
+```
+
+This registers `process.on("uncaughtException")` and `process.on("unhandledRejection")` **without removing any existing listeners** (it chains, preserving Node's default behavior). It is only installed in Node-like environments (where `process.on` exists); in browsers/workers it is silently skipped. `client.close()` removes the handlers the SDK added.
+
+### PII / secrets guarantee
+
+The reporter uses its **own** minimal `fetch` path straight to the DSN — never the main API transport — so it never inherits or transmits your credentials. It will **never** send your `clientId`, `apiKey`, the `Authorization` header, or the **outgoing request body** (which carries phone numbers and message content). Only the server's error `body`, `status_code`, HTTP `method`, and request `path` leave the process. This is enforced by tests.
 
 ## TypeScript
 

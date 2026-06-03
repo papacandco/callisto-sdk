@@ -15,11 +15,13 @@ export class NotifyResource {
       return Array.isArray(v) && v.length > 0;
     });
     if (!hasEvent) {
-      throw new ValidationError(
+      const err = new ValidationError(
         "At least one event block (email, sms, mobile_push, web_push, webhook, messaging, real_time) must be provided.",
         400,
         undefined,
       );
+      this.t.report(err, "POST", "/notify/send");
+      throw err;
     }
     return this.t.request<NotifyResult>("POST", "/notify/send", { body: params });
   }

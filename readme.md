@@ -154,6 +154,33 @@ These behave the same across all six SDKs (see each language README for the exac
 - **Client-side validation** — some invalid calls fail before any network request: a WhatsApp OTP without an `instance_code`, or a `notify.send` with no event block, raise a validation error locally.
 - **Errors** — every error derives from a base `CallistoError` carrying `message`, `status_code`, and the decoded response `body`. HTTP statuses map to specific subclasses: `AuthenticationError` (401), `ValidationError` (400/422), `NotFoundError` (404), `RateLimitError` (429, with `retry_after`), `ApiError` (other non-2xx), and `NetworkError` (transport failures, status `0`).
 
+## Error reporting
+
+Every SDK ships with an opt-in, Sentry-style **error reporter** that POSTs captured errors to a
+Callisto error-tracking ingest endpoint (a **DSN**). It auto-captures the SDK's own errors (API,
+network, and client-side validation) and exposes a small public API for your own exceptions:
+
+```
+client.captureException(error[, level][, extra])
+client.captureMessage(text[, level][, extra])
+client.setUser({ id, email, ... })
+```
+
+Configure it via constructor argument or environment variable; absent a DSN, reporting is fully
+disabled (a no-op) and the SDK behaves exactly as before.
+
+| Environment variable | Default | Meaning |
+| --- | --- | --- |
+| `CALLISTO_ERROR_DSN` | none | Ingest DSN (the full POST URL). Absent → reporting disabled. |
+| `CALLISTO_CAPTURE_UNHANDLED` | `false` | Install the platform's global unhandled-exception handler. |
+| `CALLISTO_ENVIRONMENT` | none | Optional tag included in `context.environment`. |
+
+Delivery is background and best-effort — it never alters or delays the original error, and the
+reporter's own failures are silently swallowed. **PII guarantee:** the reporter never transmits your
+client ID, API key, the `Authorization` header, or the outgoing request body (phone numbers and
+message content); only the server's error `body`, `status_code`, HTTP `method`, and request `path`
+leave the process. See each language README for the exact API and the opt-in handler details.
+
 ## Per-language guides
 
 The READMEs below document every method, parameter, model field, enum, and error for each implementation:

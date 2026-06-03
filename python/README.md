@@ -35,6 +35,9 @@ Client(
     base_url: Optional[str] = None,
     timeout: float = 30.0,
     http_client: Optional[httpx.Client] = None,
+    error_dsn: Optional[str] = None,
+    capture_unhandled: Optional[bool] = None,
+    environment: Optional[str] = None,
 )
 ```
 
@@ -45,6 +48,9 @@ Client(
 | `base_url` | `str` | `https://api.callistosignal.com/v1` | API base URL. Falls back to env `CALLISTO_BASE_URL`. Trailing slash is stripped. |
 | `timeout` | `float` | `30.0` | Request timeout in seconds. |
 | `http_client` | `httpx.Client` | `None` | Optional pre-configured `httpx.Client` to inject (advanced use, e.g. custom transport, proxies, or testing). When provided, the SDK uses it as-is and Basic auth/timeout are **not** applied automatically — configure those on the client you pass in. |
+| `error_dsn` | `str` | `None` | Error-reporting ingest DSN. Falls back to env `CALLISTO_ERROR_DSN`. Absent → error reporting is fully disabled (no-op). See [Error reporting](#error-reporting). |
+| `capture_unhandled` | `bool` | `False` | Install a global unhandled-exception handler. Falls back to env `CALLISTO_CAPTURE_UNHANDLED`. Requires `error_dsn`. |
+| `environment` | `str` | `None` | Optional environment tag (e.g. `"production"`) attached to reported errors. Falls back to env `CALLISTO_ENVIRONMENT`. |
 
 `client_id` and `api_key` are required: pass them as arguments or via the `CALLISTO_CLIENT_ID` / `CALLISTO_API_KEY` environment variables. If neither is available, the constructor raises `ValueError`.
 
@@ -55,6 +61,9 @@ Client(
 | `CALLISTO_CLIENT_ID` | `client_id` |
 | `CALLISTO_API_KEY` | `api_key` |
 | `CALLISTO_BASE_URL` | `base_url` |
+| `CALLISTO_ERROR_DSN` | `error_dsn` |
+| `CALLISTO_CAPTURE_UNHANDLED` | `capture_unhandled` |
+| `CALLISTO_ENVIRONMENT` | `environment` |
 
 ```python
 import os
@@ -766,3 +775,72 @@ with Client(client_id="...", api_key="...") as callisto:
     except CallistoError as exc:
         print(f"API error ({exc.status_code}): {exc.message}")
 ```
+
+## Error reporting
+
+The SDK ships with an opt-in, Sentry-style error reporter. When you provide an **error DSN**, the SDK automatically captures its own `CallistoError`s (API + network failures, and client-side validation errors) and POSTs them to the Callisto error-tracking ingest endpoint. You can also report your application's own exceptions through the same channel.
+
+Delivery is **background, best-effort, and isolated**: it never delays or alters the original error, runs on a daemon thread, and swallows all of its own failures. When no DSN is set, every reporting method is a cheap no-op and the SDK behaves exactly as before.
+
+### Enabling
+
+Pass the DSN to the constructor, or set `CALLISTO_ERROR_DSN`. The DSN is the full ingest URL:
+
+```python
+from callisto_sdk import Client
+
+callisto = Client(
+    client_id="your-client-id",
+    api_key="your-api-key",
+    error_dsn="https://app.callistosignal.com/ingest/<uuid>?key=<public-key>",
+    environment="production",
+)
+```
+
+```bash
+export CALLISTO_ERROR_DSN="https://app.callistosignal.com/ingest/<uuid>?key=<public-key>"
+export CALLISTO_ENVIRONMENT="production"
+```
+
+### Public API
+
+```python
+# Report a caught exception (level defaults to "error")
+try:
+    risky()
+except Exception as exc:
+    callisto.capture_exception(exc, level="error", extra={"order_id": "123"})
+
+# Report a plain message (level defaults to "info")
+callisto.capture_message("checkout completed", level="info")
+
+# Attach a user context to subsequent events (pass None to clear)
+callisto.set_user({"id": "user_42", "email": "user@example.com"})
+```
+
+`level` is one of `"fatal" | "error" | "warning" | "info"` (anything else is coerced to `"error"`). The reporter is also reachable directly as `callisto.error_reporter` for advanced use.
+
+Pending events are flushed on `close()` / context-manager exit:
+
+```python
+with Client(error_dsn="...", client_id="...", api_key="...") as callisto:
+    callisto.capture_message("starting up")
+# flushed and closed on exit
+```
+
+### Opt-in global handler
+
+When `capture_unhandled=True` (or `CALLISTO_CAPTURE_UNHANDLED=true`) **and** a DSN is set, the SDK installs a global unhandled-exception handler that reports uncaught exceptions at level `fatal`, then **chains** the previous `sys.excepthook` / `threading.excepthook` so the interpreter's default behavior (printing the traceback, exit code) is preserved.
+
+```python
+callisto = Client(
+    client_id="...",
+    api_key="...",
+    error_dsn="...",
+    capture_unhandled=True,
+)
+```
+
+### PII / secrets guarantee
+
+The reporter **never** transmits your `client_id`, `api_key`, the `Authorization` header, or the **outgoing request body** (which carries phone numbers and message content). Only the server's error response `body`, `status_code`, the HTTP `method`, and the request `path` are ever sent. The reporter uses its own HTTP client and never inherits your Basic-auth credentials.

@@ -749,6 +749,78 @@ try (CallistoClient callisto = new CallistoClient("...", "...")) {
 }
 ```
 
+## Error reporting
+
+The SDK ships with an opt-in, Sentry-style error reporter that POSTs captured errors to a Callisto
+error-tracking **ingest endpoint** (the DSN). It auto-captures the SDK's own `CallistoException`s
+(API and network errors, plus client-side validation errors) and exposes a public API so your
+application can report its own exceptions. Delivery is **background, best-effort, and never alters
+or delays the original error** — when no DSN is configured, every method is a cheap no-op and the
+SDK behaves exactly as before.
+
+### Enabling
+
+Set the DSN via the constructor or the `CALLISTO_ERROR_DSN` environment variable. The DSN **is** the
+full POST URL (e.g. `https://app.callistosignal.com/ingest/<uuid>?key=<key>`).
+
+```java
+CallistoClient callisto = new CallistoClient(
+        "your-client-id", "your-api-key",
+        null, null,            // baseUrl, timeout
+        null, null,            // httpClient, mapper
+        "https://app.callistosignal.com/ingest/<uuid>?key=<key>", // errorDsn
+        false,                 // captureUnhandled
+        "production",          // environment
+        null);                 // errorSender (advanced/testing)
+```
+
+### Environment variables
+
+| Variable | Maps to | Default | Meaning |
+| --- | --- | --- | --- |
+| `CALLISTO_ERROR_DSN` | `errorDsn` | none | Ingest DSN. Absent → reporting fully disabled (no-op). |
+| `CALLISTO_CAPTURE_UNHANDLED` | `captureUnhandled` | `false` | Install the global unhandled-exception handler. |
+| `CALLISTO_ENVIRONMENT` | `environment` | none | Optional tag included in `context.environment`. |
+
+`captureUnhandled` accepts `1`, `true`, `yes`, or `on` (case-insensitive). Resolution order matches
+the credentials: explicit constructor argument first, then the environment variable.
+
+### Public API
+
+```java
+callisto.captureException(throwable);
+callisto.captureException(throwable, "warning", Map.of("order_id", "ord_9"));
+callisto.captureMessage("something happened");
+callisto.captureMessage("something happened", "info", Map.of("k", "v"));
+callisto.setUser(Map.of("id", "u_1", "email", "user@example.com"));
+```
+
+`level` is constrained to `fatal | error | warning | info`. All methods are no-ops without a DSN and
+never throw. The reporter is also reachable via `callisto.errorReporter()` for advanced use.
+
+### Opt-in unhandled-exception handler
+
+When `captureUnhandled` is enabled (and a DSN is set), the client installs a
+`Thread.setDefaultUncaughtExceptionHandler` that reports uncaught exceptions at `level = fatal`,
+**chaining** (not clobbering) any pre-existing default handler so the platform's behavior is
+preserved.
+
+### What is sent
+
+Each event carries `message`, `type`, `level`, `culprit`, `stacktrace`, `context`
+(`{ sdk: { name, version, language }, environment? }` plus per-call `extra`; for API errors also
+`status_code`, the response `body`, and rate-limit `retry_after`), and — for transport errors —
+`request: { method, path }`. `setUser` data is attached as `user`.
+
+### PII guarantee
+
+The reporter **never** transmits your `clientId`, `apiKey`, the `Authorization` header, or the
+**outgoing request body** (which carries phone numbers and message content). Only the server's error
+`body`, `status_code`, HTTP `method`, and request `path` leave the process. The reporter uses its
+own dedicated HTTP client, never the main transport, so it never inherits the Basic-auth
+credentials. Its own failures (any exception or non-`202` response) are silently swallowed and never
+re-captured.
+
 ## Testing seam
 
 `Transport` accepts an injectable `java.net.http.HttpClient` and `ObjectMapper`, exposed through the advanced `CallistoClient` constructor:

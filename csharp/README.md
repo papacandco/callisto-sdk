@@ -770,6 +770,88 @@ catch (CallistoException exc)
 }
 ```
 
+## Error reporting
+
+The SDK ships with an opt-in, Sentry-style error reporter that POSTs captured errors to a Callisto
+error-tracking ingest endpoint (the DSN). It is **disabled by default**: with no DSN configured the
+client behaves exactly as before and nothing is sent.
+
+When a DSN is set, the SDK automatically captures its own `CallistoException`s (API + network
+errors, and client-side validation errors from `Otp.Send` / `Notify.Send`). You can also report
+your application's own exceptions and messages through the client.
+
+Delivery is **background and best-effort**: capturing never blocks or delays your error path, never
+alters the original exception (it still propagates), and the reporter swallows all of its own
+failures.
+
+### Enabling
+
+Pass an `errorDsn` (or set the `CALLISTO_ERROR_DSN` environment variable):
+
+```csharp
+using var callisto = new CallistoClient(
+    clientId: "your-client-id",
+    apiKey: "your-api-key",
+    errorDsn: "https://app.callistosignal.com/ingest/<uuid>?key=<public_key>",
+    environment: "production");
+```
+
+The DSN **is** the full ingest POST URL — the SDK posts directly to it (no parsing beyond a
+well-formed-URL check). A missing or malformed DSN leaves reporting disabled.
+
+### Environment variables
+
+| Variable | Maps to | Default | Meaning |
+| --- | --- | --- | --- |
+| `CALLISTO_ERROR_DSN` | `errorDsn` | none | Ingest DSN. Absent → reporting fully disabled (no-op). |
+| `CALLISTO_CAPTURE_UNHANDLED` | `captureUnhandled` | `false` | Install the global unhandled-exception handler. |
+| `CALLISTO_ENVIRONMENT` | `environment` | none | Optional tag included in `context.environment`. |
+
+Resolution order matches credentials: explicit constructor argument first, then the environment
+variable.
+
+### Public API
+
+```csharp
+callisto.CaptureException(exception, level: "error", extra: null);
+callisto.CaptureMessage("something happened", level: "info", extra: null);
+callisto.SetUser(new Dictionary<string, object?> { ["id"] = "u-123", ["email"] = "a@b.com" });
+```
+
+- `level` is constrained to `fatal | error | warning | info` (anything else falls back to `error`).
+- `extra` is an optional `IDictionary<string, object?>` merged into the event's `context`.
+- `SetUser(null)` clears the user context.
+- The underlying reporter is also reachable via `callisto.ErrorReporter` for advanced use (e.g.
+  `Flush()`), but the three client methods are the supported surface.
+
+### Opt-in global handler (default off)
+
+When `captureUnhandled` is `true` **and** a DSN is set, the client subscribes to
+`AppDomain.CurrentDomain.UnhandledException` and `TaskScheduler.UnobservedTaskException`, capturing
+uncaught errors at `level = fatal`. The handlers chain (they do not clobber existing handlers) and
+the platform's default behavior is preserved.
+
+```csharp
+using var callisto = new CallistoClient(
+    clientId: "...",
+    apiKey: "...",
+    errorDsn: "https://app.callistosignal.com/ingest/<uuid>?key=<public_key>",
+    captureUnhandled: true);
+```
+
+### PII guarantee
+
+The reporter **never** transmits your `clientId`, `apiKey`, the `Authorization` header, or the
+**outgoing request body** (which carries phone numbers and message content). Only the server's
+error response `body`, the HTTP `status_code`, the request `method`, and the request `path` may
+leave the process. The reporter uses its own minimal `HttpClient` — it never reuses the
+Basic-authenticated transport.
+
+### Lifecycle
+
+`Dispose()` on the client flushes pending events (briefly), stops the background worker, and
+unsubscribes any global handlers.
+
 ## Development
 
 ```bash

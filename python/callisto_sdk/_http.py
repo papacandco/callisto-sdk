@@ -5,12 +5,19 @@ from typing import Any, Optional
 import httpx
 
 from ._config import Config
+from ._reporter import ErrorReporter
 from .errors import error_from_status, NetworkError
 
 
 class Transport:
-    def __init__(self, config: Config, http_client: Optional[httpx.Client] = None):
+    def __init__(
+        self,
+        config: Config,
+        http_client: Optional[httpx.Client] = None,
+        reporter: Optional[ErrorReporter] = None,
+    ):
         self._config = config
+        self.reporter = reporter
         self._client = http_client or httpx.Client(
             auth=(config.client_id, config.api_key),
             timeout=config.timeout,
@@ -31,7 +38,9 @@ class Transport:
                 method, url, json=body if body is not None else None, params=params or None
             )
         except httpx.HTTPError as exc:
-            raise NetworkError(f"Request to {url} failed: {exc}") from exc
+            err = NetworkError(f"Request to {url} failed: {exc}")
+            self._report(err, method, path)
+            raise err from exc
 
         data: Any = None
         if resp.content:
@@ -54,8 +63,14 @@ class Transport:
                         retry_after = int(raw)
                     except ValueError:
                         retry_after = None
-            raise error_from_status(resp.status_code, str(message), data, retry_after)
+            err = error_from_status(resp.status_code, str(message), data, retry_after)
+            self._report(err, method, path)
+            raise err
         return data
+
+    def _report(self, err: Any, method: str, path: str) -> None:
+        if self.reporter is not None:
+            self.reporter.capture_exception(err, method=method, path=path)
 
     def close(self) -> None:
         self._client.close()

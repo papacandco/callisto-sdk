@@ -41,9 +41,13 @@ public class Notify {
         hasBlock |= put(body, "real_time", request.getRealTime());
 
         if (!hasBlock) {
-            throw new ValidationException(
+            ValidationException ex = new ValidationException(
                     "At least one event block (email, sms, mobile_push, web_push, "
                             + "webhook, messaging, real_time) must be provided.");
+            if (transport.reporter() != null) {
+                transport.reporter().captureException(ex);
+            }
+            throw ex;
         }
         return transport.mapper().convertValue(
                 transport.request("POST", "/notify/send", body, null), NotifyResult.class);

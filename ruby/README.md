@@ -767,6 +767,71 @@ Callisto::Client.new(client_id: "...", api_key: "...") do |callisto|
 end
 ```
 
+## Error reporting
+
+The SDK ships an opt-in, Sentry-style error reporter that POSTs captured errors to a Callisto
+error-tracking ingest endpoint (the **DSN**). It auto-captures the SDK's own `CallistoError`s
+(API + network + client-side validation) and exposes a public API for reporting your app's own
+exceptions. Delivery is **background and best-effort**: it never alters or delays the original
+error, and all of its own failures are swallowed.
+
+**Disabled by default.** With no DSN, every method below is a no-op and the SDK behaves exactly
+as it does today.
+
+### Enabling
+
+Provide an ingest DSN (the full POST URL, e.g.
+`https://app.callistosignal.com/ingest/<uuid>?key=<hex>`):
+
+```ruby
+callisto = Callisto::Client.new(
+  client_id: "your-client-id",
+  api_key: "your-api-key",
+  error_dsn: "https://app.callistosignal.com/ingest/<uuid>?key=<hex>",
+  environment: "production",   # optional, tagged in context.environment
+  capture_unhandled: false     # optional, see below
+)
+```
+
+### Environment variables
+
+| Variable | Maps to | Default | Meaning |
+| --- | --- | --- | --- |
+| `CALLISTO_ERROR_DSN` | `error_dsn` | none | Ingest DSN. Absent → reporting fully disabled. |
+| `CALLISTO_CAPTURE_UNHANDLED` | `capture_unhandled` | `false` | Install the global unhandled-exception handler. |
+| `CALLISTO_ENVIRONMENT` | `environment` | none | Optional tag included in `context.environment`. |
+
+Keyword arguments take precedence over environment variables.
+
+### Public API
+
+```ruby
+callisto.capture_exception(error, level: "error", extra: { feature: "checkout" })
+callisto.capture_message("payment retried", level: "info")
+callisto.set_user({ id: "user_123", email: "user@example.com" })
+```
+
+`level` is constrained to `fatal | error | warning | info`. `set_user` attaches a user object to
+subsequent events (pass `nil` to clear it). The reporter is also reachable directly as
+`callisto.error_reporter` for advanced use. `callisto.close` (and the block form) flushes pending
+events with a short bound.
+
+### Opt-in unhandled-exception handler
+
+When `capture_unhandled` is enabled **and** a DSN is set, the client installs an `at_exit` hook
+that inspects `$!` and reports an uncaught exception at level `fatal` before the process exits. It
+never alters the default exit behavior.
+
+```ruby
+Callisto::Client.new(client_id: "...", api_key: "...", error_dsn: "...", capture_unhandled: true)
+```
+
+### PII guarantee
+
+The reporter **never** transmits `client_id`, `api_key`, the `Authorization` header, or the
+**outgoing request body** (which carries phone numbers and message content). Only the server's
+error `body`, `status_code`, the HTTP `method`, and the request `path` ever leave the process.
+
 ## Development
 
 ```bash

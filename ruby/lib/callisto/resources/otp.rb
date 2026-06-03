@@ -23,7 +23,9 @@ module Callisto
     def send(to:, message:, sender: nil, expired_in: nil, type: nil,
              digit_size: nil, provider: nil, instance_code: nil)
       if provider == OtpProvider::WHATSAPP && (instance_code.nil? || instance_code.empty?)
-        raise ValidationError.new("instance_code is required when provider is whatsapp")
+        err = ValidationError.new("instance_code is required when provider is whatsapp")
+        @t.reporter&.capture_exception(err) if @t.respond_to?(:reporter)
+        raise err
       end
 
       body = { "to" => to, "message" => message }
