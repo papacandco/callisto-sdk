@@ -5,6 +5,9 @@ import com.callisto.sdk.errors.RateLimitException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.net.URI;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -33,6 +36,16 @@ public final class ErrorReporter {
     public static final String SDK_VERSION = "0.1.0";
 
     private static final List<String> LEVELS = List.of("fatal", "error", "warning", "info");
+
+    /** Source lines captured on each side of a frame's error line. */
+    private static final int CONTEXT_LINES = 5;
+
+    /** Skip source capture for files larger than this (bytes). */
+    private static final long MAX_SOURCE_BYTES = 2_000_000L;
+
+    /** Source roots searched (relative to the working directory) to locate a frame's file. */
+    private static final List<String> SOURCE_ROOTS =
+            List.of("src/main/java", "src/main/kotlin", "src/test/java", "src", "");
 
     private final String dsn;
     private final boolean enabled;
@@ -157,7 +170,11 @@ public final class ErrorReporter {
             path = p != null ? String.valueOf(p) : null;
         }
 
-        List<Map<String, Object>> stacktrace = buildStacktrace(t);
+        // Source context only for genuine application exceptions: a transport call site can embed
+        // the outgoing request body as literal arguments, which would violate the hard
+        // no-request-body guarantee. Transport errors already carry method/path as their culprit.
+        boolean isTransport = method != null && path != null;
+        List<Map<String, Object>> stacktrace = buildStacktrace(t, !isTransport);
         if (method != null && path != null) {
             payload.put("culprit", method + " " + path);
         } else {
@@ -219,7 +236,7 @@ public final class ErrorReporter {
         return context;
     }
 
-    private static List<Map<String, Object>> buildStacktrace(Throwable t) {
+    private static List<Map<String, Object>> buildStacktrace(Throwable t, boolean withSource) {
         List<Map<String, Object>> frames = new ArrayList<>();
         StackTraceElement[] elements = t.getStackTrace();
         if (elements == null) {
@@ -230,9 +247,77 @@ public final class ErrorReporter {
             frame.put("function", el.getClassName() + "." + el.getMethodName());
             frame.put("file", el.getFileName());
             frame.put("line", el.getLineNumber());
+            if (withSource) {
+                attachSource(frame, el);
+            }
             frames.add(frame);
         }
         return frames;
+    }
+
+    /**
+     * Best-effort: attach a {@code pre_context}/{@code context_line}/{@code post_context} window
+     * (up to {@link #CONTEXT_LINES} lines each side) around the frame's error line, so the
+     * dashboard can render the failing code with the error line in focus.
+     *
+     * <p>Java stack frames expose only the simple source file name and line number, not a path, and
+     * compiled deployments rarely ship source. We therefore resolve the file under common source
+     * roots relative to the working directory (dev / monorepo runs); when the source is absent or
+     * unreadable the frame simply renders without a window.
+     */
+    private static void attachSource(Map<String, Object> frame, StackTraceElement el) {
+        String fileName = el.getFileName();
+        int line = el.getLineNumber();
+        if (fileName == null || line < 1) {
+            return;
+        }
+        Path path = resolveSource(el.getClassName(), fileName);
+        if (path == null) {
+            return;
+        }
+        try {
+            if (Files.size(path) > MAX_SOURCE_BYTES) {
+                return;
+            }
+            List<String> lines = Files.readAllLines(path);
+            if (line > lines.size()) {
+                return;
+            }
+            int index = line - 1;
+            int start = Math.max(0, index - CONTEXT_LINES);
+            int end = Math.min(lines.size(), index + 1 + CONTEXT_LINES);
+            frame.put("pre_context", new ArrayList<>(lines.subList(start, index)));
+            frame.put("context_line", lines.get(index));
+            frame.put("post_context", new ArrayList<>(lines.subList(index + 1, end)));
+        } catch (Exception ignored) {
+            // Unreadable / decoding error — leave the frame without a window.
+        }
+    }
+
+    /**
+     * Locate a frame's source file under common source roots, deriving the package directory from
+     * the (possibly inner) class name. Returns {@code null} when nothing readable is found.
+     */
+    private static Path resolveSource(String className, String fileName) {
+        String packagePath = "";
+        if (className != null) {
+            int lastDot = className.lastIndexOf('.');
+            if (lastDot > 0) {
+                packagePath = className.substring(0, lastDot).replace('.', '/');
+            }
+        }
+        for (String root : SOURCE_ROOTS) {
+            // Prefer the package-qualified path, then a flat fallback.
+            Path qualified = Paths.get(root, packagePath, fileName);
+            if (Files.isReadable(qualified)) {
+                return qualified;
+            }
+            Path flat = Paths.get(root, fileName);
+            if (Files.isReadable(flat)) {
+                return flat;
+            }
+        }
+        return null;
     }
 
     private static String topFrameCulprit(List<Map<String, Object>> stacktrace) {

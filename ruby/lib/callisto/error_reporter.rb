@@ -22,6 +22,11 @@ module Callisto
     LEVELS = %w[fatal error warning info].freeze
     DEFAULT_LEVEL = "error"
 
+    # Source lines captured on each side of a frame's error line, and the file
+    # size above which source capture is skipped.
+    SOURCE_CONTEXT_LINES = 5
+    MAX_SOURCE_BYTES = 2_000_000
+
     # Default HTTP sender: a single-shot Net::HTTP POST returning the integer status code.
     class HttpSender
       def initialize(timeout)
@@ -183,7 +188,13 @@ module Callisto
       type = error.class.name
       payload = base_payload(error.message.to_s, type, level, extra)
 
-      frames = parse_backtrace(error.backtrace)
+      # Source context only for genuine application exceptions: a transport call
+      # site can embed the outgoing request body as literal arguments, which
+      # would violate the hard no-request-body guarantee. Transport errors carry
+      # @callisto_method / @callisto_path and already use method/path as culprit.
+      is_transport = !error.instance_variable_get(:@callisto_method).nil? &&
+                     !error.instance_variable_get(:@callisto_path).nil?
+      frames = parse_backtrace(error.backtrace, with_source: !is_transport)
       payload[:stacktrace] = frames unless frames.empty?
 
       culprit, request = culprit_and_request(error, frames)
@@ -245,19 +256,53 @@ module Callisto
     end
 
     # Parses Ruby backtrace lines ("file:line:in `function'") into frame hashes.
-    def parse_backtrace(backtrace)
+    # When with_source is true, each frame whose file is readable also carries a
+    # pre_context / context_line / post_context window around its error line.
+    def parse_backtrace(backtrace, with_source: false)
       return [] unless backtrace.is_a?(Array)
 
       backtrace.first(50).map do |line|
         m = line.match(/\A(?<file>.+?):(?<line>\d+)(?::in [`'](?<fn>.*)['`])?\z/)
-        if m
-          { function: m[:fn], file: m[:file], line: m[:line].to_i }
-        else
-          { function: nil, file: line, line: nil }
+        frame =
+          if m
+            { function: m[:fn], file: m[:file], line: m[:line].to_i }
+          else
+            { function: nil, file: line, line: nil }
+          end
+        if with_source && frame[:file] && frame[:line]
+          ctx = source_context(frame[:file], frame[:line])
+          frame.merge!(ctx) if ctx
         end
+        frame
       end
     rescue StandardError
       []
+    end
+
+    # Best-effort source window around `line` in `file`: up to
+    # SOURCE_CONTEXT_LINES lines before (pre_context), the line itself
+    # (context_line), and up to SOURCE_CONTEXT_LINES after (post_context). Ruby
+    # backtraces carry real file paths, so this works wherever the source is
+    # present at runtime. Any unreadable / oversized / out-of-range file yields
+    # nil and the frame renders without a window.
+    def source_context(file, line)
+      return nil if file.nil? || line.nil? || line < 1
+      return nil unless File.file?(file) && File.readable?(file)
+      return nil if File.size(file) > MAX_SOURCE_BYTES
+
+      lines = File.readlines(file, chomp: true)
+      return nil if line > lines.length
+
+      index = line - 1
+      start = [index - SOURCE_CONTEXT_LINES, 0].max
+      finish = [index + SOURCE_CONTEXT_LINES, lines.length - 1].min
+      {
+        pre_context: lines[start...index],
+        context_line: lines[index],
+        post_context: index + 1 <= finish ? lines[(index + 1)..finish] : []
+      }
+    rescue StandardError
+      nil
     end
 
     def normalize_level(level)

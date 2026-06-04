@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"os"
 	"reflect"
 	"runtime"
 	"strings"
@@ -269,7 +270,12 @@ func (r *ErrorReporter) buildExceptionPayload(err error, level string, extra map
 		"context": context,
 	}
 
-	if stack := buildStacktrace(); len(stack) > 0 {
+	// Source context only for genuine application exceptions: a transport call
+	// site can embed the outgoing request body as literal arguments, which would
+	// violate the hard no-request-body guarantee. Transport errors already carry
+	// method/path as their culprit.
+	withSource := method == "" || path == ""
+	if stack := buildStacktrace(withSource); len(stack) > 0 {
 		payload["stacktrace"] = stack
 	}
 
@@ -332,9 +338,18 @@ func constrainLevel(level string) string {
 	return "error"
 }
 
+// sourceContextLines is the number of source lines captured on each side of a
+// frame's error line; maxSourceBytes caps the size of a file we will read.
+const (
+	sourceContextLines = 5
+	maxSourceBytes     = 2_000_000
+)
+
 // buildStacktrace returns a best-effort innermost-first stack trace of the
-// current goroutine. Reporter internals are skipped.
-func buildStacktrace() []map[string]any {
+// current goroutine. Reporter internals are skipped. When withSource is true,
+// each frame whose source file is readable also carries a pre_context /
+// context_line / post_context window around its error line.
+func buildStacktrace(withSource bool) []map[string]any {
 	var pcs [32]uintptr
 	// Skip runtime.Callers, buildStacktrace, buildExceptionPayload.
 	n := runtime.Callers(3, pcs[:])
@@ -346,17 +361,62 @@ func buildStacktrace() []map[string]any {
 	for {
 		frame, more := frames.Next()
 		if frame.Function != "" {
-			out = append(out, map[string]any{
+			f := map[string]any{
 				"function": frame.Function,
 				"file":     frame.File,
 				"line":     frame.Line,
-			})
+			}
+			if withSource {
+				for k, v := range sourceContext(frame.File, frame.Line) {
+					f[k] = v
+				}
+			}
+			out = append(out, f)
 		}
 		if !more {
 			break
 		}
 	}
 	return out
+}
+
+// sourceContext reads up to sourceContextLines lines on each side of line in
+// file, returning pre_context / context_line / post_context so the dashboard can
+// render the failing code with the error line in focus. Go stack frames carry
+// the compile-time absolute path, so this works wherever the source is present
+// at runtime (dev / same-host deploys). Best-effort: any unreadable / oversized
+// / out-of-range file yields a nil map and the frame renders without a window.
+func sourceContext(file string, line int) map[string]any {
+	if file == "" || line < 1 {
+		return nil
+	}
+	info, err := os.Stat(file)
+	if err != nil || info.IsDir() || info.Size() > maxSourceBytes {
+		return nil
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(string(data), "\n")
+	// Drop the trailing empty element left by a final newline so line counts match.
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	for i := range lines {
+		lines[i] = strings.TrimSuffix(lines[i], "\r") // tolerate CRLF
+	}
+	if line > len(lines) {
+		return nil
+	}
+	idx := line - 1
+	start := max(idx-sourceContextLines, 0)
+	end := min(idx+1+sourceContextLines, len(lines))
+	return map[string]any{
+		"pre_context":  append([]string{}, lines[start:idx]...),
+		"context_line": lines[idx],
+		"post_context": append([]string{}, lines[idx+1:end]...),
+	}
 }
 
 func isValidDSN(dsn string) bool {

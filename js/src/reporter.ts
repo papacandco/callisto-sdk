@@ -26,6 +26,79 @@ export interface StackFrame {
   function?: string;
   file?: string;
   line?: number;
+  /** Up to CONTEXT_LINES source lines before the error line (Node only). */
+  pre_context?: string[];
+  /** The error line's source (Node only). */
+  context_line?: string;
+  /** Up to CONTEXT_LINES source lines after the error line (Node only). */
+  post_context?: string[];
+}
+
+/** Source lines captured on each side of a frame's error line. */
+const CONTEXT_LINES = 5;
+
+/** Skip source capture for files larger than this (bytes). */
+const MAX_SOURCE_BYTES = 2_000_000;
+
+interface FsLike {
+  statSync(path: string): { size: number };
+  readFileSync(path: string, encoding: "utf8"): string;
+}
+
+let fsCache: FsLike | null | undefined;
+
+/**
+ * Resolve Node's `fs` synchronously, or null when unavailable (browsers,
+ * bundled ESM without a CJS `require`). The indirect `eval` keeps bundlers
+ * from statically resolving `require` and breaking browser builds.
+ */
+function nodeFs(): FsLike | null {
+  if (fsCache !== undefined) return fsCache;
+  fsCache = null;
+  try {
+    const proc = (globalThis as { process?: { versions?: { node?: string } } })
+      .process;
+    if (proc?.versions?.node) {
+      const req = (0, eval)(
+        "typeof require === 'function' ? require : null",
+      ) as ((m: string) => unknown) | null;
+      if (req) fsCache = req("node:fs") as FsLike;
+    }
+  } catch {
+    fsCache = null;
+  }
+  return fsCache;
+}
+
+/**
+ * Best-effort source window around a frame's error line — `pre_context` /
+ * `context_line` / `post_context`, up to CONTEXT_LINES each side. Returns the
+ * frame unchanged when the file can't be read (no Node fs, missing/oversized
+ * file, line out of range), so the frame simply renders without source.
+ */
+function withSourceContext(frame: StackFrame): StackFrame {
+  const { file, line } = frame;
+  if (!file || line === undefined || line < 1) return frame;
+
+  const fs = nodeFs();
+  if (!fs) return frame;
+
+  try {
+    if (fs.statSync(file).size > MAX_SOURCE_BYTES) return frame;
+    const lines = fs.readFileSync(file, "utf8").split("\n");
+    if (line > lines.length) return frame;
+
+    const index = line - 1; // 0-based offset of the error line
+    const start = Math.max(0, index - CONTEXT_LINES);
+    return {
+      ...frame,
+      pre_context: lines.slice(start, index),
+      context_line: lines[index],
+      post_context: lines.slice(index + 1, index + 1 + CONTEXT_LINES),
+    };
+  } catch {
+    return frame;
+  }
 }
 
 /** Extra metadata an error carries for the reporter (set by the transport). */
@@ -257,7 +330,12 @@ export class ErrorReporter {
       context: this.buildContext(error, extra),
     };
     if (culprit) payload.culprit = culprit;
-    if (frames.length > 0) payload.stacktrace = frames;
+    if (frames.length > 0) {
+      // Source context only for genuine application exceptions. For transport
+      // errors a call site can embed the outgoing request body as literal
+      // arguments — capturing it would violate the no-request-body guarantee.
+      payload.stacktrace = reqInfo ? frames : frames.map(withSourceContext);
+    }
     if (reqInfo) {
       payload.request = { method: reqInfo.method, path: reqInfo.path };
     }

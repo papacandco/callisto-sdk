@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
@@ -273,7 +274,10 @@ public sealed class ErrorReporter : IDisposable
             }
         }
 
-        var frames = BuildStacktrace(ex);
+        // Source context only for genuine application exceptions: a transport call site can embed
+        // the outgoing request body as literal arguments, which would violate the hard
+        // no-request-body guarantee. Transport errors already carry method/path as their culprit.
+        var frames = BuildStacktrace(ex, withSource: method is null || path is null);
 
         if (method is not null && path is not null)
         {
@@ -374,7 +378,13 @@ public sealed class ErrorReporter : IDisposable
         new(@"^\s*at\s+(?<function>.+?)(?:\s+in\s+(?<file>.+):line\s+(?<line>\d+))?\s*$",
             RegexOptions.Compiled);
 
-    private static List<Dictionary<string, object?>> BuildStacktrace(Exception ex)
+    /// <summary>Source lines captured on each side of a frame's error line.</summary>
+    private const int SourceContextLines = 5;
+
+    /// <summary>Skip source capture for files larger than this (bytes).</summary>
+    private const long MaxSourceBytes = 2_000_000;
+
+    private static List<Dictionary<string, object?>> BuildStacktrace(Exception ex, bool withSource)
     {
         var frames = new List<Dictionary<string, object?>>();
         var trace = ex.StackTrace;
@@ -425,10 +435,73 @@ public sealed class ErrorReporter : IDisposable
                 frame["line"] = lineNo;
             }
 
+            if (withSource &&
+                frame.TryGetValue("file", out var fileObj) && fileObj is string srcFile &&
+                frame.TryGetValue("line", out var lineObj) && lineObj is int srcLine)
+            {
+                AttachSource(frame, srcFile, srcLine);
+            }
+
             frames.Add(frame);
         }
 
         return frames;
+    }
+
+    /// <summary>
+    /// Best-effort: attach a <c>pre_context</c>/<c>context_line</c>/<c>post_context</c> window (up
+    /// to <see cref="SourceContextLines"/> lines each side) around the frame's error line, so the
+    /// dashboard can render the failing code with the error line in focus.
+    /// </summary>
+    /// <remarks>
+    /// C# stack frames only expose a file path and line number when debug symbols (PDBs) are
+    /// present and the source is on disk — typical in dev / debug builds. When the source is absent
+    /// or unreadable the frame simply renders without a window.
+    /// </remarks>
+    private static void AttachSource(Dictionary<string, object?> frame, string file, int line)
+    {
+        if (string.IsNullOrEmpty(file) || line < 1)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!File.Exists(file) || new FileInfo(file).Length > MaxSourceBytes)
+            {
+                return;
+            }
+
+            var lines = File.ReadAllLines(file);
+            if (line > lines.Length)
+            {
+                return;
+            }
+
+            var index = line - 1;
+            var start = Math.Max(0, index - SourceContextLines);
+            var end = Math.Min(lines.Length, index + 1 + SourceContextLines);
+
+            var pre = new List<string>();
+            for (var i = start; i < index; i++)
+            {
+                pre.Add(lines[i]);
+            }
+
+            var post = new List<string>();
+            for (var i = index + 1; i < end; i++)
+            {
+                post.Add(lines[i]);
+            }
+
+            frame["pre_context"] = pre;
+            frame["context_line"] = lines[index];
+            frame["post_context"] = post;
+        }
+        catch
+        {
+            // Best-effort: unreadable / decoding error → leave the frame without a window.
+        }
     }
 
     private static string? TopFrameCulprit(List<Dictionary<string, object?>> frames)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import linecache
 import queue
 import threading
 import traceback
@@ -49,19 +50,64 @@ def _constrain_level(level: Optional[str]) -> str:
     return "error"
 
 
-def _build_stacktrace(error: BaseException) -> list[dict]:
+# Source lines captured on each side of a frame's error line.
+_CONTEXT_LINES = 5
+
+
+def _source_context(filename: str, lineno: int) -> Optional[dict]:
+    """Best-effort source window around ``lineno``: up to ``_CONTEXT_LINES``
+    lines before (``pre_context``), the line itself (``context_line``), and up to
+    ``_CONTEXT_LINES`` after (``post_context``), so the dashboard can render the
+    failing code with the error line in focus.
+
+    Uses :mod:`linecache` (the same source the traceback module reads), so it
+    works for importable modules without re-opening files. Returns ``None`` when
+    the source is unavailable — missing file, ``<stdin>``/``<string>`` frames, or
+    line out of range — and the frame then renders without a source window.
+    """
+    if not filename or not lineno or lineno < 1:
+        return None
+
+    context_line = linecache.getline(filename, lineno)
+    if context_line == "":
+        # Unreadable file or line out of range.
+        return None
+
+    pre = [
+        linecache.getline(filename, n).rstrip("\n")
+        for n in range(max(1, lineno - _CONTEXT_LINES), lineno)
+    ]
+
+    post: list[str] = []
+    for n in range(lineno + 1, lineno + 1 + _CONTEXT_LINES):
+        line = linecache.getline(filename, n)
+        if line == "":
+            break
+        post.append(line.rstrip("\n"))
+
+    return {
+        "pre_context": pre,
+        "context_line": context_line.rstrip("\n"),
+        "post_context": post,
+    }
+
+
+def _build_stacktrace(error: BaseException, with_source: bool = False) -> list[dict]:
     frames: list[dict] = []
     tb = error.__traceback__
     try:
         for frame, lineno in traceback.walk_tb(tb):
             code = frame.f_code
-            frames.append(
-                {
-                    "function": code.co_name,
-                    "file": code.co_filename,
-                    "line": lineno,
-                }
-            )
+            built: dict[str, Any] = {
+                "function": code.co_name,
+                "file": code.co_filename,
+                "line": lineno,
+            }
+            if with_source:
+                ctx = _source_context(code.co_filename, lineno)
+                if ctx:
+                    built.update(ctx)
+            frames.append(built)
     except Exception:
         return []
     # innermost-first
@@ -258,12 +304,17 @@ class ErrorReporter:
             "context": context,
         }
 
-        stacktrace = _build_stacktrace(error)
+        # Transport-originated errors carry method + path. Source context is
+        # captured ONLY for genuine application exceptions: a transport call
+        # site can embed the outgoing request body as literal arguments, and
+        # capturing it would violate the hard no-request-body guarantee. Such
+        # errors already carry method/path as their culprit.
+        is_transport = method is not None and path is not None
+
+        stacktrace = _build_stacktrace(error, with_source=not is_transport)
         if stacktrace:
             payload["stacktrace"] = stacktrace
 
-        # Transport-originated errors carry method + path.
-        is_transport = method is not None and path is not None
         if is_transport:
             payload["culprit"] = f"{method} {path}"
             payload["request"] = {"method": method, "path": path}
