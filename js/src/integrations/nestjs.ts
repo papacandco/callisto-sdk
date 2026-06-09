@@ -15,7 +15,7 @@ export type { CallistoIntegrationOptions, ErrorCapturer } from "./shared.js";
 
 interface HttpRequestLike {
   method?: string;
-  route?: { path?: string };
+  route?: { path?: unknown };
   originalUrl?: string;
   url?: string;
 }
@@ -30,9 +30,13 @@ function extractRequest(context: ExecutionContext): {
   } catch {
     req = undefined;
   }
+  // route.path can be a RegExp or array for regex/array routes; only use it
+  // when it's a plain string, else fall back to the resolved URL.
+  const routePath = req?.route?.path;
+  const path = typeof routePath === "string" ? routePath : undefined;
   return {
     method: req?.method ?? "",
-    path: req?.route?.path ?? req?.originalUrl ?? req?.url ?? "",
+    path: path ?? req?.originalUrl ?? req?.url ?? "",
   };
 }
 

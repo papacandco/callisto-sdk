@@ -8,7 +8,11 @@ import {
 export type { CallistoIntegrationOptions, ErrorCapturer } from "./shared.js";
 
 function requestPath(req: Request): string {
-  return req.route?.path ?? req.originalUrl ?? req.url ?? "";
+  // req.route?.path can be a RegExp or string[] for regex/array routes; only
+  // use it when it's a plain string, else fall back to the resolved URL.
+  const routePath = req.route?.path;
+  const path = typeof routePath === "string" ? routePath : undefined;
+  return path ?? req.originalUrl ?? req.url ?? "";
 }
 
 /**
