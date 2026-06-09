@@ -1,7 +1,7 @@
 import { CallistoError, RateLimitError } from "./errors.js";
 
 /** SDK version reported in `context.sdk.version`. Mirrors package.json. */
-export const SDK_VERSION = "0.1.0";
+export const SDK_VERSION = "1.0.0";
 
 export type ErrorLevel = "fatal" | "error" | "warning" | "info";
 

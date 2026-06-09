@@ -1,4 +1,4 @@
-# @callisto/sdk
+# callisto-sdk
 
 Official Callisto messaging API SDK for JavaScript / TypeScript (Node 18+, ESM).
 
@@ -11,7 +11,7 @@ Official Callisto messaging API SDK for JavaScript / TypeScript (Node 18+, ESM).
 ## Install
 
 ```bash
-npm install @callisto/sdk
+npm install callisto-sdk
 ```
 
 ## Configuration
@@ -19,7 +19,7 @@ npm install @callisto/sdk
 Create a client with `new CallistoClient(options)`:
 
 ```ts
-import { CallistoClient } from "@callisto/sdk";
+import { CallistoClient } from "callisto-sdk";
 
 const client = new CallistoClient({
   clientId: "your_client_id",
@@ -66,7 +66,7 @@ Auth is **HTTP Basic**: the SDK sends `Authorization: Basic base64(client_id:api
 ## Quick start
 
 ```ts
-import { CallistoClient } from "@callisto/sdk";
+import { CallistoClient } from "callisto-sdk";
 
 const client = new CallistoClient({
   clientId: "your_client_id",
@@ -170,7 +170,7 @@ console.log(msg.status);
 > Note: `instance_code` is sent to the API as `instanceCode` on the wire; you always pass the snake_case `instance_code`.
 
 ```ts
-import { OtpType, OtpProvider } from "@callisto/sdk";
+import { OtpType, OtpProvider } from "callisto-sdk";
 
 const otp = await client.otp.send({
   to: "+2250700000000",
@@ -341,7 +341,7 @@ const res = await client.whatsapp.sendText("inst_abc123", {
 | `scheduled_at` | `string`                                   | no       | ISO 8601 timestamp to schedule delivery. |
 
 ```ts
-import { WhatsAppMediaType } from "@callisto/sdk";
+import { WhatsAppMediaType } from "callisto-sdk";
 
 const res = await client.whatsapp.sendMedia("inst_abc123", {
   to: "+2250700000000",
@@ -732,7 +732,7 @@ import {
   RateLimitError,
   ValidationError,
   NetworkError,
-} from "@callisto/sdk";
+} from "callisto-sdk";
 
 const client = new CallistoClient();
 
@@ -827,8 +827,8 @@ Only the request `method` and `path` are attached (as `http_method` / `http_path
 
 ```ts
 import express from "express";
-import { CallistoClient } from "@callisto/sdk";
-import { callistoErrorHandler } from "@callisto/sdk/express";
+import { CallistoClient } from "callisto-sdk";
+import { callistoErrorHandler } from "callisto-sdk/express";
 
 const client = new CallistoClient({ errorDsn: process.env.CALLISTO_APP_ERROR_DSN });
 const app = express();
@@ -845,8 +845,8 @@ app.use((err, req, res, next) => {
 ### NestJS
 
 ```ts
-import { CallistoClient } from "@callisto/sdk";
-import { CallistoInterceptor } from "@callisto/sdk/nestjs";
+import { CallistoClient } from "callisto-sdk";
+import { CallistoInterceptor } from "callisto-sdk/nestjs";
 
 const client = new CallistoClient({ errorDsn: process.env.CALLISTO_APP_ERROR_DSN });
 
@@ -859,7 +859,7 @@ Or register it as a global provider:
 
 ```ts
 import { APP_INTERCEPTOR } from "@nestjs/core";
-import { CallistoInterceptor } from "@callisto/sdk/nestjs";
+import { CallistoInterceptor } from "callisto-sdk/nestjs";
 
 @Module({
   providers: [
