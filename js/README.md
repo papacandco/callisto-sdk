@@ -810,6 +810,69 @@ This registers `process.on("uncaughtException")` and `process.on("unhandledRejec
 
 The reporter uses its **own** minimal `fetch` path straight to the DSN — never the main API transport — so it never inherits or transmits your credentials. It will **never** send your `clientId`, `apiKey`, the `Authorization` header, or the **outgoing request body** (which carries phone numbers and message content). Only the server's error `body`, `status_code`, HTTP `method`, and request `path` leave the process. This is enforced by tests.
 
+## Framework integrations
+
+The SDK ships optional Express and NestJS integrations that auto-report unhandled request errors through the same [error reporter](#error-reporting). They are **capture-only**: the error is always re-thrown / passed along, so your own responses and error handling are never altered. They live behind subpath imports, so the core package stays dependency-free.
+
+Both accept `CallistoIntegrationOptions`:
+
+| Option         | Type                                   | Default           | Description                                |
+| -------------- | -------------------------------------- | ----------------- | ------------------------------------------ |
+| `shouldReport` | `(err: unknown) => boolean`            | report everything | Return `false` to skip reporting an error. |
+| `level`        | `string \| ((err: unknown) => string)` | `"error"`         | Level for the reported event.              |
+
+Only the request `method` and `path` are attached (as `http_method` / `http_path`) — never the body, headers, or query.
+
+### Express
+
+```ts
+import express from "express";
+import { CallistoClient } from "@callisto/sdk";
+import { callistoErrorHandler } from "@callisto/sdk/express";
+
+const client = new CallistoClient({ errorDsn: process.env.CALLISTO_APP_ERROR_DSN });
+const app = express();
+
+// ...your routes...
+
+// Register LAST, just before your own error handler:
+app.use(callistoErrorHandler(client));
+app.use((err, req, res, next) => {
+  res.status(500).json({ error: "Internal Server Error" });
+});
+```
+
+### NestJS
+
+```ts
+import { CallistoClient } from "@callisto/sdk";
+import { CallistoInterceptor } from "@callisto/sdk/nestjs";
+
+const client = new CallistoClient({ errorDsn: process.env.CALLISTO_APP_ERROR_DSN });
+
+const app = await NestFactory.create(AppModule);
+app.useGlobalInterceptors(new CallistoInterceptor(client));
+await app.listen(3000);
+```
+
+Or register it as a global provider:
+
+```ts
+import { APP_INTERCEPTOR } from "@nestjs/core";
+import { CallistoInterceptor } from "@callisto/sdk/nestjs";
+
+@Module({
+  providers: [
+    {
+      provide: APP_INTERCEPTOR,
+      useFactory: (client: CallistoClient) => new CallistoInterceptor(client),
+      inject: [CallistoClient],
+    },
+  ],
+})
+export class AppModule {}
+```
+
 ## TypeScript
 
 - Full type definitions ship with the package (`dist/index.d.ts`); no separate `@types` install is needed.
