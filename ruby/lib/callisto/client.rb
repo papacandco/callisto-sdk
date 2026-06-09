@@ -20,7 +20,7 @@ module Callisto
     # @param api_key [String, nil] falls back to CALLISTO_API_KEY
     # @param base_url [String, nil] falls back to CALLISTO_BASE_URL, then the default
     # @param timeout [Float] request timeout in seconds
-    # @param error_dsn [String, nil] error-reporting DSN; falls back to CALLISTO_ERROR_DSN
+    # @param error_dsn [String, nil] error-reporting DSN; falls back to CALLISTO_APP_ERROR_DSN
     # @param capture_unhandled [Boolean, nil] install the global unhandled-exception handler;
     #   falls back to CALLISTO_CAPTURE_UNHANDLED, then false
     # @param environment [String, nil] optional environment tag; falls back to CALLISTO_ENVIRONMENT

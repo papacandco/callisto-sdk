@@ -786,7 +786,7 @@ failures.
 
 ### Enabling
 
-Pass an `errorDsn` (or set the `CALLISTO_ERROR_DSN` environment variable):
+Pass an `errorDsn` (or set the `CALLISTO_APP_ERROR_DSN` environment variable):
 
 ```csharp
 using var callisto = new CallistoClient(
@@ -803,7 +803,7 @@ well-formed-URL check). A missing or malformed DSN leaves reporting disabled.
 
 | Variable | Maps to | Default | Meaning |
 | --- | --- | --- | --- |
-| `CALLISTO_ERROR_DSN` | `errorDsn` | none | Ingest DSN. Absent → reporting fully disabled (no-op). |
+| `CALLISTO_APP_ERROR_DSN` | `errorDsn` | none | Ingest DSN. Absent → reporting fully disabled (no-op). |
 | `CALLISTO_CAPTURE_UNHANDLED` | `captureUnhandled` | `false` | Install the global unhandled-exception handler. |
 | `CALLISTO_ENVIRONMENT` | `environment` | none | Optional tag included in `context.environment`. |
 

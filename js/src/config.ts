@@ -43,7 +43,7 @@ export function resolveConfig(opts: CallistoOptions = {}): ResolvedConfig {
     process.env.CALLISTO_BASE_URL ??
     DEFAULT_BASE_URL
   ).replace(/\/+$/, "");
-  const errorDsn = opts.errorDsn ?? process.env.CALLISTO_ERROR_DSN;
+  const errorDsn = opts.errorDsn ?? process.env.CALLISTO_APP_ERROR_DSN;
   const environment = opts.environment ?? process.env.CALLISTO_ENVIRONMENT;
   return {
     clientId,

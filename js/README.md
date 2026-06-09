@@ -50,7 +50,7 @@ Any option you omit is read from the environment:
 | `CALLISTO_CLIENT_ID`  | `clientId`     |
 | `CALLISTO_API_KEY`    | `apiKey`       |
 | `CALLISTO_BASE_URL`   | `baseUrl`      |
-| `CALLISTO_ERROR_DSN`  | `errorDsn`     |
+| `CALLISTO_APP_ERROR_DSN`  | `errorDsn`     |
 | `CALLISTO_CAPTURE_UNHANDLED` | `captureUnhandled` (truthy: `1`/`true`) |
 | `CALLISTO_ENVIRONMENT` | `environment` |
 
@@ -763,7 +763,7 @@ When no DSN is configured the reporter is a complete no-op: nothing is sent and 
 
 ### Enabling
 
-Pass `errorDsn` (or set `CALLISTO_ERROR_DSN`). The DSN **is** the full ingest POST URL, e.g. `https://app.callistosignal.com/ingest/<id>?key=<public_key>`:
+Pass `errorDsn` (or set `CALLISTO_APP_ERROR_DSN`). The DSN **is** the full ingest POST URL, e.g. `https://app.callistosignal.com/ingest/<id>?key=<public_key>`:
 
 ```ts
 const client = new CallistoClient({
@@ -778,7 +778,7 @@ const client = new CallistoClient({
 
 | Env var                      | Falls back for     | Notes                                       |
 | ---------------------------- | ------------------ | ------------------------------------------- |
-| `CALLISTO_ERROR_DSN`         | `errorDsn`         | Absent → reporting disabled.                |
+| `CALLISTO_APP_ERROR_DSN`         | `errorDsn`         | Absent → reporting disabled.                |
 | `CALLISTO_CAPTURE_UNHANDLED` | `captureUnhandled` | Truthy (`1` / `true`) installs the handler. |
 | `CALLISTO_ENVIRONMENT`       | `environment`      | Optional environment tag.                   |
 
@@ -799,7 +799,7 @@ Set `captureUnhandled: true` (or `CALLISTO_CAPTURE_UNHANDLED=true`) **and** a DS
 
 ```ts
 const client = new CallistoClient({
-  errorDsn: process.env.CALLISTO_ERROR_DSN,
+  errorDsn: process.env.CALLISTO_APP_ERROR_DSN,
   captureUnhandled: true,
 });
 ```

@@ -15,7 +15,7 @@ const testDSN = "https://app.callistosignal.com/ingest/app-1?key=pub-key"
 // fake sender, plus the API server handler.
 func newReportingClient(t *testing.T, sender *fakeSender, handler http.HandlerFunc) *Client {
 	t.Helper()
-	t.Setenv("CALLISTO_ERROR_DSN", "")
+	t.Setenv("CALLISTO_APP_ERROR_DSN", "")
 	c, srv := newTestClient(t, handler)
 	_ = srv
 	rc, err := NewClient(Options{
@@ -104,7 +104,7 @@ func TestReporterNoCredentialOrRequestBodyLeak(t *testing.T) {
 }
 
 func TestReporterDisabledWithoutDSN(t *testing.T) {
-	t.Setenv("CALLISTO_ERROR_DSN", "")
+	t.Setenv("CALLISTO_APP_ERROR_DSN", "")
 	sender := &fakeSender{}
 	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, `{"message":"x"}`)

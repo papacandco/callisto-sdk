@@ -58,7 +58,7 @@ res, err := client.SMS.Send(ctx, callisto.SendSMSParams{Sender: "Acme", To: []st
 
 - `NewClient(Options) (*Client, error)` — returns an error (never panics). Env fallback:
   `ClientID`→`CALLISTO_CLIENT_ID`, `APIKey`→`CALLISTO_API_KEY`, `BaseURL`→`CALLISTO_BASE_URL`,
-  `ErrorDSN`→`CALLISTO_ERROR_DSN`, `Environment`→`CALLISTO_ENVIRONMENT`. Default base URL
+  `ErrorDSN`→`CALLISTO_APP_ERROR_DSN`, `Environment`→`CALLISTO_ENVIRONMENT`. Default base URL
   `https://api.callistosignal.com/v1` (trailing slash trimmed); default timeout 30s; fail-fast
   error if `ClientID`/`APIKey` unresolved.
 - Resources as exported fields: `client.Balance` (`*BalanceService`), `client.SMS`

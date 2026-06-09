@@ -196,7 +196,7 @@ disabled (a no-op) and the SDK behaves exactly as before.
 
 | Environment variable | Default | Meaning |
 | --- | --- | --- |
-| `CALLISTO_ERROR_DSN` | none | Ingest DSN (the full POST URL). Absent → reporting disabled. |
+| `CALLISTO_APP_ERROR_DSN` | none | Ingest DSN (the full POST URL). Absent → reporting disabled. |
 | `CALLISTO_CAPTURE_UNHANDLED` | `false` | Install the platform's global unhandled-exception handler. |
 | `CALLISTO_ENVIRONMENT` | none | Optional tag included in `context.environment`. |
 

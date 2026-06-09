@@ -760,7 +760,7 @@ SDK behaves exactly as before.
 
 ### Enabling
 
-Set the DSN via the constructor or the `CALLISTO_ERROR_DSN` environment variable. The DSN **is** the
+Set the DSN via the constructor or the `CALLISTO_APP_ERROR_DSN` environment variable. The DSN **is** the
 full POST URL (e.g. `https://app.callistosignal.com/ingest/<uuid>?key=<key>`).
 
 ```java
@@ -778,7 +778,7 @@ CallistoClient callisto = new CallistoClient(
 
 | Variable | Maps to | Default | Meaning |
 | --- | --- | --- | --- |
-| `CALLISTO_ERROR_DSN` | `errorDsn` | none | Ingest DSN. Absent → reporting fully disabled (no-op). |
+| `CALLISTO_APP_ERROR_DSN` | `errorDsn` | none | Ingest DSN. Absent → reporting fully disabled (no-op). |
 | `CALLISTO_CAPTURE_UNHANDLED` | `captureUnhandled` | `false` | Install the global unhandled-exception handler. |
 | `CALLISTO_ENVIRONMENT` | `environment` | none | Optional tag included in `context.environment`. |
 

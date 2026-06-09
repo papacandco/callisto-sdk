@@ -59,7 +59,7 @@ public sealed class CallistoClient : IDisposable
     /// tests). Ignored when <paramref name="httpClient"/> is supplied.
     /// </param>
     /// <param name="errorDsn">
-    /// Error-reporting ingest DSN. Falls back to <c>CALLISTO_ERROR_DSN</c>. Absent → reporting
+    /// Error-reporting ingest DSN. Falls back to <c>CALLISTO_APP_ERROR_DSN</c>. Absent → reporting
     /// disabled.
     /// </param>
     /// <param name="captureUnhandled">

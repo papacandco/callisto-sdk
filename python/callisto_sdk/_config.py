@@ -41,7 +41,7 @@ def resolve_config(
             "(pass arguments or set CALLISTO_CLIENT_ID / CALLISTO_API_KEY)."
         )
     base_url = (base_url or os.environ.get("CALLISTO_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
-    error_dsn = error_dsn or os.environ.get("CALLISTO_ERROR_DSN")
+    error_dsn = error_dsn or os.environ.get("CALLISTO_APP_ERROR_DSN")
     if capture_unhandled is None:
         capture_unhandled = _env_bool(os.environ.get("CALLISTO_CAPTURE_UNHANDLED")) or False
     environment = environment or os.environ.get("CALLISTO_ENVIRONMENT")

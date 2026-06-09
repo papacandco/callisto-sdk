@@ -38,7 +38,7 @@ exceptions. Delivery is background, best-effort, and never alters or delays the 
 
 | Setting (camel / snake) | Env var | Default | Meaning |
 | --- | --- | --- | --- |
-| `errorDsn` / `error_dsn` | `CALLISTO_ERROR_DSN` | none | Ingest DSN. Absent → reporting fully disabled (no-op). |
+| `errorDsn` / `error_dsn` | `CALLISTO_APP_ERROR_DSN` | none | Ingest DSN. Absent → reporting fully disabled (no-op). |
 | `captureUnhandled` / `capture_unhandled` | `CALLISTO_CAPTURE_UNHANDLED` | `false` | Install the global unhandled-exception handler. |
 | `environment` | `CALLISTO_ENVIRONMENT` | none | Optional tag included in `context.environment`. |
 

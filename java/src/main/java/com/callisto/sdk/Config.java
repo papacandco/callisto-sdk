@@ -52,7 +52,7 @@ public final class Config {
     /**
      * Resolves configuration including error-reporting settings.
      *
-     * <p>{@code errorDsn} falls back to {@code CALLISTO_ERROR_DSN}; when absent, error
+     * <p>{@code errorDsn} falls back to {@code CALLISTO_APP_ERROR_DSN}; when absent, error
      * reporting is disabled. {@code captureUnhandled} falls back to
      * {@code CALLISTO_CAPTURE_UNHANDLED} (default {@code false}). {@code environment}
      * falls back to {@code CALLISTO_ENVIRONMENT}.
@@ -76,7 +76,7 @@ public final class Config {
         resolvedBaseUrl = trimTrailingSlashes(resolvedBaseUrl);
         Duration resolvedTimeout = timeout != null ? timeout : DEFAULT_TIMEOUT;
 
-        String resolvedErrorDsn = orEnv(errorDsn, "CALLISTO_ERROR_DSN");
+        String resolvedErrorDsn = orEnv(errorDsn, "CALLISTO_APP_ERROR_DSN");
         boolean resolvedCaptureUnhandled = captureUnhandled != null
                 ? captureUnhandled
                 : parseBool(System.getenv("CALLISTO_CAPTURE_UNHANDLED"));

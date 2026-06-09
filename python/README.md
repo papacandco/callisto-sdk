@@ -48,7 +48,7 @@ Client(
 | `base_url` | `str` | `https://api.callistosignal.com/v1` | API base URL. Falls back to env `CALLISTO_BASE_URL`. Trailing slash is stripped. |
 | `timeout` | `float` | `30.0` | Request timeout in seconds. |
 | `http_client` | `httpx.Client` | `None` | Optional pre-configured `httpx.Client` to inject (advanced use, e.g. custom transport, proxies, or testing). When provided, the SDK uses it as-is and Basic auth/timeout are **not** applied automatically — configure those on the client you pass in. |
-| `error_dsn` | `str` | `None` | Error-reporting ingest DSN. Falls back to env `CALLISTO_ERROR_DSN`. Absent → error reporting is fully disabled (no-op). See [Error reporting](#error-reporting). |
+| `error_dsn` | `str` | `None` | Error-reporting ingest DSN. Falls back to env `CALLISTO_APP_ERROR_DSN`. Absent → error reporting is fully disabled (no-op). See [Error reporting](#error-reporting). |
 | `capture_unhandled` | `bool` | `False` | Install a global unhandled-exception handler. Falls back to env `CALLISTO_CAPTURE_UNHANDLED`. Requires `error_dsn`. |
 | `environment` | `str` | `None` | Optional environment tag (e.g. `"production"`) attached to reported errors. Falls back to env `CALLISTO_ENVIRONMENT`. |
 
@@ -61,7 +61,7 @@ Client(
 | `CALLISTO_CLIENT_ID` | `client_id` |
 | `CALLISTO_API_KEY` | `api_key` |
 | `CALLISTO_BASE_URL` | `base_url` |
-| `CALLISTO_ERROR_DSN` | `error_dsn` |
+| `CALLISTO_APP_ERROR_DSN` | `error_dsn` |
 | `CALLISTO_CAPTURE_UNHANDLED` | `capture_unhandled` |
 | `CALLISTO_ENVIRONMENT` | `environment` |
 
@@ -784,7 +784,7 @@ Delivery is **background, best-effort, and isolated**: it never delays or alters
 
 ### Enabling
 
-Pass the DSN to the constructor, or set `CALLISTO_ERROR_DSN`. The DSN is the full ingest URL:
+Pass the DSN to the constructor, or set `CALLISTO_APP_ERROR_DSN`. The DSN is the full ingest URL:
 
 ```python
 from callisto_sdk import Client
@@ -798,7 +798,7 @@ callisto = Client(
 ```
 
 ```bash
-export CALLISTO_ERROR_DSN="https://app.callistosignal.com/ingest/<uuid>?key=<public-key>"
+export CALLISTO_APP_ERROR_DSN="https://app.callistosignal.com/ingest/<uuid>?key=<public-key>"
 export CALLISTO_ENVIRONMENT="production"
 ```
 

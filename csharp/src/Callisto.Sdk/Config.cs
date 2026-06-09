@@ -6,7 +6,7 @@ namespace Callisto.Sdk;
 /// Resolved client configuration. Credentials fall back to environment variables
 /// (<c>CALLISTO_CLIENT_ID</c>, <c>CALLISTO_API_KEY</c>, <c>CALLISTO_BASE_URL</c>) when an
 /// argument is not supplied. Error-reporting settings fall back to
-/// <c>CALLISTO_ERROR_DSN</c>, <c>CALLISTO_CAPTURE_UNHANDLED</c>, and
+/// <c>CALLISTO_APP_ERROR_DSN</c>, <c>CALLISTO_CAPTURE_UNHANDLED</c>, and
 /// <c>CALLISTO_ENVIRONMENT</c>.
 /// </summary>
 public sealed class Config
@@ -89,7 +89,7 @@ public sealed class Config
 
         var resolvedDsn = Coalesce(
             errorDsn,
-            System.Environment.GetEnvironmentVariable("CALLISTO_ERROR_DSN"));
+            System.Environment.GetEnvironmentVariable("CALLISTO_APP_ERROR_DSN"));
 
         var resolvedCapture = captureUnhandled
             ?? ParseBool(System.Environment.GetEnvironmentVariable("CALLISTO_CAPTURE_UNHANDLED"));

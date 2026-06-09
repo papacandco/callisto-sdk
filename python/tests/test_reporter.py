@@ -257,7 +257,7 @@ def test_client_public_capture_api():
 
 
 def test_no_dsn_client_still_works(monkeypatch):
-    monkeypatch.delenv("CALLISTO_ERROR_DSN", raising=False)
+    monkeypatch.delenv("CALLISTO_APP_ERROR_DSN", raising=False)
     client = Client(client_id="cid", api_key="secret", base_url=BASE)
     assert client.error_reporter.enabled is False
     # public API is a safe no-op

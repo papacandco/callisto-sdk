@@ -797,7 +797,7 @@ callisto = Callisto::Client.new(
 
 | Variable | Maps to | Default | Meaning |
 | --- | --- | --- | --- |
-| `CALLISTO_ERROR_DSN` | `error_dsn` | none | Ingest DSN. Absent → reporting fully disabled. |
+| `CALLISTO_APP_ERROR_DSN` | `error_dsn` | none | Ingest DSN. Absent → reporting fully disabled. |
 | `CALLISTO_CAPTURE_UNHANDLED` | `capture_unhandled` | `false` | Install the global unhandled-exception handler. |
 | `CALLISTO_ENVIRONMENT` | `environment` | none | Optional tag included in `context.environment`. |
 

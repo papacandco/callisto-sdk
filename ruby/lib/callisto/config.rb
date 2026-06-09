@@ -16,7 +16,7 @@ module Callisto
     # @param base_url [String, nil] falls back to CALLISTO_BASE_URL, then the default
     # @param timeout [Float] request timeout in seconds
     # @param error_dsn [String, nil] error-reporting ingest DSN; falls back to
-    #   CALLISTO_ERROR_DSN. When absent, error reporting is fully disabled (no-op).
+    #   CALLISTO_APP_ERROR_DSN. When absent, error reporting is fully disabled (no-op).
     # @param capture_unhandled [Boolean, nil] install the global unhandled-exception
     #   handler; falls back to CALLISTO_CAPTURE_UNHANDLED, then false.
     # @param environment [String, nil] optional tag in context.environment; falls back
@@ -36,7 +36,7 @@ module Callisto
 
       base_url = (base_url || ENV["CALLISTO_BASE_URL"] || DEFAULT_BASE_URL).sub(%r{/+\z}, "")
 
-      error_dsn = error_dsn || ENV["CALLISTO_ERROR_DSN"]
+      error_dsn = error_dsn || ENV["CALLISTO_APP_ERROR_DSN"]
       error_dsn = nil if error_dsn.is_a?(String) && error_dsn.empty?
 
       capture_unhandled = resolve_capture_unhandled(capture_unhandled)

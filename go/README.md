@@ -75,7 +75,7 @@ back to an environment variable when its `Options` field is empty.
 | `BaseURL`          | `CALLISTO_BASE_URL`   | `https://api.callistosignal.com/v1`      |
 | `Timeout`          | —                     | `30s`                                    |
 | `HTTPClient`       | —                     | a `*http.Client` with the timeout above  |
-| `ErrorDSN`         | `CALLISTO_ERROR_DSN`  | — (error reporting disabled when absent) |
+| `ErrorDSN`         | `CALLISTO_APP_ERROR_DSN`  | — (error reporting disabled when absent) |
 | `Environment`      | `CALLISTO_ENVIRONMENT`| —                                        |
 | `ErrorSender`      | —                     | default HTTP sender (mainly for testing) |
 
@@ -250,7 +250,7 @@ client.CaptureMessage("checkout started", "info")
 client.CaptureException(err, callisto.WithLevel("warning"), callisto.WithContext(map[string]any{"order": 42}))
 ```
 
-Configure the DSN via `Options.ErrorDSN` or `CALLISTO_ERROR_DSN`. Absent a DSN, reporting is a
+Configure the DSN via `Options.ErrorDSN` or `CALLISTO_APP_ERROR_DSN`. Absent a DSN, reporting is a
 complete no-op and the SDK behaves exactly as before. Delivery is **background and best-effort** —
 it never alters or delays the original error (which is still returned), and the reporter's own
 failures are silently swallowed.

@@ -32,7 +32,7 @@ type Options struct {
 	// Timeout is used as-is.
 	HTTPClient *http.Client
 	// ErrorDSN is the error-reporting ingest DSN. Falls back to
-	// CALLISTO_ERROR_DSN. Absent → error reporting is fully disabled.
+	// CALLISTO_APP_ERROR_DSN. Absent → error reporting is fully disabled.
 	ErrorDSN string
 	// Environment is an optional tag attached to reported errors. Falls back to
 	// CALLISTO_ENVIRONMENT.
@@ -73,7 +73,7 @@ func resolveConfig(opts Options) (config, error) {
 		timeout = defaultTimeout
 	}
 
-	errorDSN := firstNonEmpty(opts.ErrorDSN, os.Getenv("CALLISTO_ERROR_DSN"))
+	errorDSN := firstNonEmpty(opts.ErrorDSN, os.Getenv("CALLISTO_APP_ERROR_DSN"))
 	environment := firstNonEmpty(opts.Environment, os.Getenv("CALLISTO_ENVIRONMENT"))
 
 	return config{
