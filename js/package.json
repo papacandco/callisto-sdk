@@ -11,17 +11,45 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./express": {
+      "types": "./dist/integrations/express.d.ts",
+      "import": "./dist/integrations/express.js"
+    },
+    "./nestjs": {
+      "types": "./dist/integrations/nestjs.d.ts",
+      "import": "./dist/integrations/nestjs.js"
     }
   },
-  "files": ["dist", "README.md"],
-  "engines": { "node": ">=18" },
+  "peerDependencies": {
+    "express": ">=4",
+    "@nestjs/common": ">=9",
+    "rxjs": ">=7"
+  },
+  "peerDependenciesMeta": {
+    "express": { "optional": true },
+    "@nestjs/common": { "optional": true },
+    "rxjs": { "optional": true }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "devDependencies": {
+    "@nestjs/common": "^11.1.26",
+    "@types/express": "^5.0.6",
     "@types/node": "^20.12.0",
+    "express": "^5.2.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
     "typescript": "^5.4.0",
     "vitest": "^4.1.8"
   }
