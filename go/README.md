@@ -255,7 +255,30 @@ complete no-op and the SDK behaves exactly as before. Delivery is **background a
 it never alters or delays the original error (which is still returned), and the reporter's own
 failures are silently swallowed.
 
+### Without the API client (DSN only)
+
+Error reporting is independent of the API client. When you only want to report errors — no SMS / OTP
+/ WhatsApp calls — build a standalone reporter with `NewErrorReporter`. It needs **only a DSN** (no
+`ClientID` / `APIKey`) and exposes the same capture API:
+
+```go
+reporter := callisto.NewErrorReporter(callisto.ReporterOptions{
+	DSN:         "https://app.callistosignal.com/ingest/<app-id>?key=<public-key>",
+	Environment: "production",
+})
+defer reporter.Close() // flushes pending events
+
+reporter.SetUser(map[string]any{"id": "user-123"})
+reporter.CaptureMessage("checkout started", "info", nil)
+reporter.CaptureException(err, callisto.WithLevel("warning"), callisto.WithContext(map[string]any{"order": 42}))
+```
+
+An empty/invalid `DSN` yields a no-op reporter, so it is safe to construct unconditionally.
+
 ### Capturing panics
+
+`Recover` is available on both the `Client` and a standalone reporter — `defer reporter.Recover()`
+works identically to `defer client.Recover()`.
 
 Go has no process-wide uncaught-exception hook, so instead of an auto-installed global handler the
 SDK provides an explicit helper. Defer it at the top of a goroutine or request handler:

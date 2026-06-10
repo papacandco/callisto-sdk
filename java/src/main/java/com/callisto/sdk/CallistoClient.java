@@ -100,25 +100,9 @@ public class CallistoClient implements AutoCloseable {
         this.whatsapp = new WhatsApp(transport);
         this.notify = new Notify(transport);
 
-        if (config.isCaptureUnhandled() && errorReporter.isEnabled()) {
-            installUncaughtHandler();
+        if (config.isCaptureUnhandled()) {
+            errorReporter.installUncaughtHandler();
         }
-    }
-
-    private void installUncaughtHandler() {
-        final Thread.UncaughtExceptionHandler previous =
-                Thread.getDefaultUncaughtExceptionHandler();
-        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
-            try {
-                errorReporter.captureException(throwable, "fatal", null);
-                errorReporter.flush();
-            } catch (Throwable ignored) {
-                // Never let reporting disturb the platform's default behavior.
-            }
-            if (previous != null) {
-                previous.uncaughtException(thread, throwable);
-            }
-        });
     }
 
     public Balance balance() {

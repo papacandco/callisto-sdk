@@ -774,6 +774,29 @@ CallistoClient callisto = new CallistoClient(
         null);                 // errorSender (advanced/testing)
 ```
 
+### Without the API client (DSN only)
+
+Error reporting is independent of the API client, so you don't need a `CallistoClient` (or
+client id / api key) just to report errors. Construct an `ErrorReporter` directly from a DSN:
+
+```java
+import com.callisto.sdk.reporting.ErrorReporter;
+
+ErrorReporter reporter = new ErrorReporter("https://app.callistosignal.com/ingest/<uuid>?key=<key>");
+// or: new ErrorReporter(dsn, "production");
+// or: ErrorReporter.fromEnv();   // reads CALLISTO_APP_ERROR_DSN / CALLISTO_ENVIRONMENT
+
+reporter.installUncaughtHandler(); // optional: auto-capture uncaught throwables at level "fatal"
+
+reporter.captureException(throwable, "warning", Map.of("order_id", "ord_9"));
+reporter.close();                  // flushes pending events
+```
+
+`installUncaughtHandler()` installs the same chaining `Thread.setDefaultUncaughtExceptionHandler`
+the full client installs for `captureUnhandled = true`, so a DSN-only reporter gets the same
+auto-capture. An absent/invalid DSN yields a no-op reporter (and `installUncaughtHandler()` does
+nothing), so it is safe to construct unconditionally.
+
 ### Environment variables
 
 | Variable | Maps to | Default | Meaning |

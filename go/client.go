@@ -41,34 +41,10 @@ func NewClient(opts Options) (*Client, error) {
 	return c, nil
 }
 
-// captureConfig is the resolved configuration for a CaptureException call.
-type captureConfig struct {
-	level string
-	extra map[string]any
-}
-
-// CaptureOption customizes a CaptureException call.
-type CaptureOption func(*captureConfig)
-
-// WithLevel sets the level of a captured event (fatal|error|warning|info).
-func WithLevel(level string) CaptureOption {
-	return func(c *captureConfig) { c.level = level }
-}
-
-// WithContext attaches extra context fields to a captured event. Forbidden keys
-// (credentials, auth) are dropped by the reporter.
-func WithContext(extra map[string]any) CaptureOption {
-	return func(c *captureConfig) { c.extra = extra }
-}
-
 // CaptureException reports an error to the configured error DSN. It is a no-op
 // when error reporting is disabled. Delivery is background and best-effort.
 func (c *Client) CaptureException(err error, opts ...CaptureOption) {
-	cfg := captureConfig{level: "error"}
-	for _, o := range opts {
-		o(&cfg)
-	}
-	c.reporter.CaptureException(err, cfg.level, cfg.extra, "", "")
+	c.reporter.CaptureException(err, opts...)
 }
 
 // CaptureMessage reports a plain message to the configured error DSN at the
@@ -96,7 +72,7 @@ func (c *Client) Recover() {
 		if !ok {
 			err = fmt.Errorf("%v", rec)
 		}
-		c.reporter.CaptureException(err, "fatal", nil, "", "")
+		c.reporter.capture(err, "fatal", nil, "", "")
 		c.reporter.Flush()
 		panic(rec)
 	}

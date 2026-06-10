@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"reflect"
@@ -117,6 +118,49 @@ func newErrorReporter(dsn, environment string, sender ErrorSender) *ErrorReporte
 	return r
 }
 
+// ReporterOptions configures a standalone ErrorReporter built with
+// NewErrorReporter. Only a DSN is required — error reporting is independent of
+// the API client, so no ClientID/APIKey is needed.
+type ReporterOptions struct {
+	// DSN is the error-reporting ingest DSN. Empty or non-well-formed http(s)
+	// URLs disable the reporter (every method becomes a cheap no-op).
+	DSN string
+	// Environment is an optional tag attached to reported errors
+	// (context.environment).
+	Environment string
+	// Sender is an optional custom sender (mainly for tests); nil uses the
+	// default background HTTP sender.
+	Sender ErrorSender
+}
+
+// NewErrorReporter builds a standalone, credential-free error reporter that
+// posts captured errors to the Callisto ingest DSN. It is the DSN-only
+// counterpart to NewClient: use it when you want error reporting without the
+// API client. Call Close (or Flush) before exit to drain pending events.
+func NewErrorReporter(opts ReporterOptions) *ErrorReporter {
+	return newErrorReporter(opts.DSN, opts.Environment, opts.Sender)
+}
+
+// captureConfig is the resolved configuration for a CaptureException call.
+type captureConfig struct {
+	level string
+	extra map[string]any
+}
+
+// CaptureOption customizes a CaptureException call.
+type CaptureOption func(*captureConfig)
+
+// WithLevel sets the level of a captured event (fatal|error|warning|info).
+func WithLevel(level string) CaptureOption {
+	return func(c *captureConfig) { c.level = level }
+}
+
+// WithContext attaches extra context fields to a captured event. Forbidden keys
+// (credentials, auth) are dropped by the reporter.
+func WithContext(extra map[string]any) CaptureOption {
+	return func(c *captureConfig) { c.extra = extra }
+}
+
 // Enabled reports whether the reporter will actually send events.
 func (r *ErrorReporter) Enabled() bool { return r.enabled }
 
@@ -134,16 +178,48 @@ func (r *ErrorReporter) SetUser(user map[string]any) {
 	r.user = cp
 }
 
-// CaptureException builds a payload from err and enqueues a background send.
-// method and path are non-empty only for transport-originated errors. It never
-// blocks meaningfully and never panics.
-func (r *ErrorReporter) CaptureException(err error, level string, extra map[string]any, method, path string) {
+// CaptureException reports an error to the configured error DSN. It is a no-op
+// when error reporting is disabled. Delivery is background and best-effort: the
+// caller is never blocked and the reporter's own failures are swallowed. The
+// level defaults to "error"; use WithLevel / WithContext to customize.
+func (r *ErrorReporter) CaptureException(err error, opts ...CaptureOption) {
+	cfg := captureConfig{level: "error"}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	r.capture(err, cfg.level, cfg.extra, "", "")
+}
+
+// capture builds a payload from err and enqueues a background send. method and
+// path are non-empty only for transport-originated errors. It never blocks
+// meaningfully and never panics.
+func (r *ErrorReporter) capture(err error, level string, extra map[string]any, method, path string) {
 	if !r.enabled || err == nil {
 		return
 	}
 	defer func() { _ = recover() }()
 	payload := r.buildExceptionPayload(err, level, extra, method, path)
 	r.enqueue(payload)
+}
+
+// Recover is a deferred panic handler that reports an in-flight panic at level
+// "fatal" and then re-panics, preserving normal crash semantics. Use it as:
+//
+//	defer reporter.Recover()
+//
+// Go has no process-wide uncaught-exception hook, so this explicit helper is the
+// idiomatic equivalent of the other SDKs' opt-in global handler. recover() only
+// works when called directly by a deferred function, so this cannot delegate.
+func (r *ErrorReporter) Recover() {
+	if rec := recover(); rec != nil {
+		err, ok := rec.(error)
+		if !ok {
+			err = fmt.Errorf("%v", rec)
+		}
+		r.capture(err, "fatal", nil, "", "")
+		r.Flush()
+		panic(rec)
+	}
 }
 
 // CaptureMessage captures a plain message at the given level.

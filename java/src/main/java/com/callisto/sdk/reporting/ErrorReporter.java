@@ -81,6 +81,38 @@ public final class ErrorReporter {
                 : null;
     }
 
+    /**
+     * Builds a reporter from just a DSN. Error reporting is independent of the API
+     * client, so no client id / api key is needed. A {@code null}/blank or
+     * non-well-formed DSN disables the reporter (every method becomes a no-op).
+     *
+     * @param dsn the ingest DSN (the full POST URL).
+     */
+    public ErrorReporter(String dsn) {
+        this(dsn, null, null, null);
+    }
+
+    /**
+     * Builds a reporter from a DSN and an environment tag.
+     *
+     * @param dsn         the ingest DSN (the full POST URL).
+     * @param environment optional environment tag for {@code context.environment}.
+     */
+    public ErrorReporter(String dsn, String environment) {
+        this(dsn, environment, null, null);
+    }
+
+    /**
+     * Builds a reporter from the environment: {@code CALLISTO_APP_ERROR_DSN} (required
+     * for reporting to be active) and {@code CALLISTO_ENVIRONMENT} (optional tag). When
+     * the DSN is absent the reporter is a cheap no-op.
+     */
+    public static ErrorReporter fromEnv() {
+        return new ErrorReporter(
+                System.getenv("CALLISTO_APP_ERROR_DSN"),
+                System.getenv("CALLISTO_ENVIRONMENT"));
+    }
+
     private static boolean isValidDsn(String dsn) {
         if (dsn == null || dsn.trim().isEmpty()) {
             return false;
@@ -396,6 +428,34 @@ public final class ErrorReporter {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    /**
+     * Installs a global handler that reports uncaught throwables at level {@code "fatal"}
+     * and then delegates to the previously-installed handler (chaining, not replacing), so
+     * the platform's default crash behavior is preserved. No-op when the reporter is
+     * disabled. This is the Java equivalent of the other SDKs' opt-in global handler and
+     * lets a DSN-only reporter auto-capture crashes without the full API client. The full
+     * {@link com.callisto.sdk.CallistoClient} installs the same handler when configured
+     * with {@code captureUnhandled = true}.
+     */
+    public void installUncaughtHandler() {
+        if (!enabled) {
+            return;
+        }
+        final Thread.UncaughtExceptionHandler previous =
+                Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((thread, throwable) -> {
+            try {
+                captureException(throwable, "fatal", null);
+                flush();
+            } catch (Throwable ignored) {
+                // Never let reporting disturb the platform's default behavior.
+            }
+            if (previous != null) {
+                previous.uncaughtException(thread, throwable);
+            }
+        });
     }
 
     private void awaitIdle(long seconds) {

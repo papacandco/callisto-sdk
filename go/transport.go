@@ -103,7 +103,7 @@ func (t *transport) request(ctx context.Context, method, path string, body any, 
 // report fires a fire-and-forget capture for a transport-originated error.
 func (t *transport) report(err error, method, path string) {
 	if t.reporter != nil {
-		t.reporter.CaptureException(err, "error", nil, method, path)
+		t.reporter.capture(err, "error", nil, method, path)
 	}
 }
 
@@ -145,6 +145,6 @@ func messageFromBody(data any, status int) string {
 
 func (t *transport) reportLocal(err error) {
 	if t.reporter != nil {
-		t.reporter.CaptureException(err, "error", nil, "", "")
+		t.reporter.capture(err, "error", nil, "", "")
 	}
 }
