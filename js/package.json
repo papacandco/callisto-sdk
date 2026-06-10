@@ -1,6 +1,6 @@
 {
   "name": "callisto-sdk",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Official Callisto messaging API SDK for JavaScript/TypeScript",
   "license": "MIT",
   "type": "module",
