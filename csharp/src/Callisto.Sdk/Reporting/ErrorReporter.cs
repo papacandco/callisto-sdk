@@ -379,7 +379,7 @@ public sealed class ErrorReporter : IDisposable
             RegexOptions.Compiled);
 
     /// <summary>Source lines captured on each side of a frame's error line.</summary>
-    private const int SourceContextLines = 5;
+    private const int SourceContextLines = 10;
 
     /// <summary>Skip source capture for files larger than this (bytes).</summary>
     private const long MaxSourceBytes = 2_000_000;

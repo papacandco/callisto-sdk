@@ -341,7 +341,7 @@ func constrainLevel(level string) string {
 // sourceContextLines is the number of source lines captured on each side of a
 // frame's error line; maxSourceBytes caps the size of a file we will read.
 const (
-	sourceContextLines = 5
+	sourceContextLines = 10
 	maxSourceBytes     = 2_000_000
 )
 

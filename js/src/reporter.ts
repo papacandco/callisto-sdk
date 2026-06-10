@@ -35,7 +35,7 @@ export interface StackFrame {
 }
 
 /** Source lines captured on each side of a frame's error line. */
-const CONTEXT_LINES = 5;
+const CONTEXT_LINES = 10;
 
 /** Skip source capture for files larger than this (bytes). */
 const MAX_SOURCE_BYTES = 2_000_000;

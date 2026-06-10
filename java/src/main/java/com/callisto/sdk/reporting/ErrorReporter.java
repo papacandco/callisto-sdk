@@ -38,7 +38,7 @@ public final class ErrorReporter {
     private static final List<String> LEVELS = List.of("fatal", "error", "warning", "info");
 
     /** Source lines captured on each side of a frame's error line. */
-    private static final int CONTEXT_LINES = 5;
+    private static final int CONTEXT_LINES = 10;
 
     /** Skip source capture for files larger than this (bytes). */
     private static final long MAX_SOURCE_BYTES = 2_000_000L;

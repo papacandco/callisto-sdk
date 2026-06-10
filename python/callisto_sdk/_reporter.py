@@ -51,7 +51,7 @@ def _constrain_level(level: Optional[str]) -> str:
 
 
 # Source lines captured on each side of a frame's error line.
-_CONTEXT_LINES = 5
+_CONTEXT_LINES = 10
 
 
 def _source_context(filename: str, lineno: int) -> Optional[dict]:

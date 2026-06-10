@@ -24,7 +24,7 @@ module Callisto
 
     # Source lines captured on each side of a frame's error line, and the file
     # size above which source capture is skipped.
-    SOURCE_CONTEXT_LINES = 5
+    SOURCE_CONTEXT_LINES = 10
     MAX_SOURCE_BYTES = 2_000_000
 
     # Default HTTP sender: a single-shot Net::HTTP POST returning the integer status code.
