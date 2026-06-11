@@ -1,6 +1,6 @@
 {
   "name": "callisto-sdk",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Official Callisto messaging API SDK for JavaScript/TypeScript",
   "license": "MIT",
   "type": "module",
@@ -10,15 +10,18 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./express": {
       "types": "./dist/integrations/express.d.ts",
-      "import": "./dist/integrations/express.js"
+      "import": "./dist/integrations/express.js",
+      "default": "./dist/integrations/express.js"
     },
     "./nestjs": {
       "types": "./dist/integrations/nestjs.d.ts",
-      "import": "./dist/integrations/nestjs.js"
+      "import": "./dist/integrations/nestjs.js",
+      "default": "./dist/integrations/nestjs.js"
     }
   },
   "peerDependencies": {

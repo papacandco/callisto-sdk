@@ -12,8 +12,10 @@ export interface CallistoOptions {
 }
 
 export interface ResolvedConfig {
-  clientId: string;
-  apiKey: string;
+  /** Only required for messaging API calls — validated lazily by the transport. */
+  clientId?: string;
+  /** Only required for messaging API calls — validated lazily by the transport. */
+  apiKey?: string;
   baseUrl: string;
   timeoutMs: number;
   errorDsn?: string;
@@ -31,13 +33,10 @@ function resolveCaptureUnhandled(opts: CallistoOptions): boolean {
 }
 
 export function resolveConfig(opts: CallistoOptions = {}): ResolvedConfig {
+  // Credentials are optional at construction: error reporting needs only a DSN.
+  // The transport validates them lazily, the first time a messaging call runs.
   const clientId = opts.clientId ?? process.env.CALLISTO_CLIENT_ID;
   const apiKey = opts.apiKey ?? process.env.CALLISTO_API_KEY;
-  if (!clientId || !apiKey) {
-    throw new Error(
-      "Callisto: clientId and apiKey are required (pass options or set CALLISTO_CLIENT_ID / CALLISTO_API_KEY).",
-    );
-  }
   const baseUrl = (
     opts.baseUrl ??
     process.env.CALLISTO_BASE_URL ??
@@ -46,8 +45,8 @@ export function resolveConfig(opts: CallistoOptions = {}): ResolvedConfig {
   const errorDsn = opts.errorDsn ?? process.env.CALLISTO_APP_ERROR_DSN;
   const environment = opts.environment ?? process.env.CALLISTO_ENVIRONMENT;
   return {
-    clientId,
-    apiKey,
+    clientId: clientId || undefined,
+    apiKey: apiKey || undefined,
     baseUrl,
     timeoutMs: opts.timeoutMs ?? 30000,
     errorDsn: errorDsn || undefined,

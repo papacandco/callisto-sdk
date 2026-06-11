@@ -28,6 +28,13 @@ export class Transport {
   }
 
   private authHeader(): string {
+    if (!this.cfg.clientId || !this.cfg.apiKey) {
+      throw new Error(
+        "Callisto: clientId and apiKey are required for messaging API calls " +
+          "(pass options or set CALLISTO_CLIENT_ID / CALLISTO_API_KEY). " +
+          "Error reporting works without them.",
+      );
+    }
     const raw = `${this.cfg.clientId}:${this.cfg.apiKey}`;
     const b64 =
       typeof Buffer !== "undefined"

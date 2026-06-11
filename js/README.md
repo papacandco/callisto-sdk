@@ -5,7 +5,7 @@ Official Callisto messaging API SDK for JavaScript / TypeScript (Node 18+, ESM).
 ## Requirements
 
 - **Node 18+** — the SDK uses the built-in global `fetch`, so no HTTP dependency is required.
-- **ESM only** — the package is `"type": "module"`. Import it with `import`; `require()` is not supported.
+- **ESM-first, CJS-compatible** — the package is `"type": "module"`. Prefer `import`; `require()` also works on Node 22+ (and via bundlers) thanks to a `default` export condition.
 - **TypeScript types ship in the box** (`dist/index.d.ts`). No `@types/...` package needed.
 
 ## Install
@@ -31,15 +31,15 @@ const client = new CallistoClient({
 
 | Option             | Type      | Required | Default                             | Description                                                                                                        |
 | ------------------ | --------- | -------- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `clientId`         | `string`  | yes\*    | `process.env.CALLISTO_CLIENT_ID`    | Your API client id.                                                                                                |
-| `apiKey`           | `string`  | yes\*    | `process.env.CALLISTO_API_KEY`      | Your API key (secret).                                                                                             |
+| `clientId`         | `string`  | msg\*    | `process.env.CALLISTO_CLIENT_ID`    | Your API client id.                                                                                                |
+| `apiKey`           | `string`  | msg\*    | `process.env.CALLISTO_API_KEY`      | Your API key (secret).                                                                                             |
 | `baseUrl`          | `string`  | no       | `https://api.callistosignal.com/v1` | API base URL. Trailing slashes are stripped.                                                                      |
 | `timeoutMs`        | `number`  | no       | `30000`                             | Per-request timeout in milliseconds (via `AbortController`).                                                       |
 | `errorDsn`         | `string`  | no       | none                                | Error-reporting ingest DSN. Absent → error reporting is disabled (no-op). See [Error reporting](#error-reporting). |
 | `captureUnhandled` | `boolean` | no       | `false`                             | Install a global `uncaughtException` / `unhandledRejection` handler.                                              |
 | `environment`      | `string`  | no       | none                                | Optional tag attached to reported events as `context.environment`.                                                |
 
-\* `clientId` and `apiKey` are required, but may be supplied via constructor options **or** environment variables. If neither is resolved, the constructor throws.
+\* `clientId` and `apiKey` are required **only for messaging** (SMS / OTP / WhatsApp / Notify / balance) and may be supplied via constructor options **or** environment variables. They are validated lazily: the client constructs fine without them (error reporting needs only a DSN), and a messaging call throws if they are still unresolved.
 
 ### Environment-variable fallbacks
 
@@ -876,4 +876,4 @@ export class AppModule {}
 ## TypeScript
 
 - Full type definitions ship with the package (`dist/index.d.ts`); no separate `@types` install is needed.
-- The package is **ESM-only** (`"type": "module"`). Use `import`, target Node 18+, and ensure your project is configured for ES modules.
+- The package is **ESM-first** (`"type": "module"`), targeting Node 18+. Prefer `import`; CommonJS projects can `require()` it on Node 22+ (require-of-ESM) or through a bundler, via the `default` export condition.
