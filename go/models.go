@@ -108,7 +108,7 @@ type WhatsAppMessage struct {
 	ID                  string          `json:"id"`
 	InstanceID          string          `json:"instance_id,omitempty"`
 	ClientID            string          `json:"client_id,omitempty"`
-	APIClientID         string          `json:"api_client_id,omitempty"`
+	ClientAPIID         string          `json:"client_api_id,omitempty"`
 	Recipient           string          `json:"recipient,omitempty"`
 	RecipientName       string          `json:"recipient_name,omitempty"`
 	MessageType         string          `json:"message_type,omitempty"`

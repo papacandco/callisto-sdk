@@ -118,7 +118,7 @@ public sealed class WhatsAppMessage
     [JsonPropertyName("id")] public string Id { get; set; } = "";
     [JsonPropertyName("instance_id")] public string? InstanceId { get; set; }
     [JsonPropertyName("client_id")] public string? ClientId { get; set; }
-    [JsonPropertyName("api_client_id")] public string? ApiClientId { get; set; }
+    [JsonPropertyName("client_api_id")] public string? ClientApiId { get; set; }
     [JsonPropertyName("recipient")] public string? Recipient { get; set; }
     [JsonPropertyName("recipient_name")] public string? RecipientName { get; set; }
     [JsonPropertyName("message_type")] public string? MessageType { get; set; }

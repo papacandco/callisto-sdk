@@ -607,7 +607,7 @@ All models below are exported from the package root. Read models are typed but *
 | `id`                   | `string`                          | Message id.                       |
 | `instance_id`          | `string`                          | Instance id.                      |
 | `client_id`            | `string`                          | Client id.                        |
-| `api_client_id`        | `string \| null`                  | API client id.                    |
+| `client_api_id`        | `string \| null`                  | API client id.                    |
 | `recipient`            | `string`                          | Recipient.                        |
 | `recipient_name`       | `string \| null`                  | Recipient name.                   |
 | `message_type`         | `string`                          | Message type.                     |

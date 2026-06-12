@@ -685,7 +685,7 @@ Carries both `otp_id` (populated by `get_status`) and `id` (populated by `list` 
 | `id` | `str` |
 | `instance_id` | `Optional[str]` |
 | `client_id` | `Optional[str]` |
-| `api_client_id` | `Optional[str]` |
+| `client_api_id` | `Optional[str]` |
 | `recipient` | `Optional[str]` |
 | `recipient_name` | `Optional[str]` |
 | `message_type` | `Optional[str]` |

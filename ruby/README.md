@@ -682,7 +682,7 @@ Carries both `otp_id` (populated by `get_status`) and `id` (populated by `list` 
 | `id` | `String` |
 | `instance_id` | `String` \| `nil` |
 | `client_id` | `String` \| `nil` |
-| `api_client_id` | `String` \| `nil` |
+| `client_api_id` | `String` \| `nil` |
 | `recipient` | `String` \| `nil` |
 | `recipient_name` | `String` \| `nil` |
 | `message_type` | `String` \| `nil` |

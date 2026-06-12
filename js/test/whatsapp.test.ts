@@ -19,7 +19,7 @@ const instanceResp = {
 };
 
 const messageResp = {
-  id: "msg_9", instance_id: "i1", client_id: "c1", api_client_id: null,
+  id: "msg_9", instance_id: "i1", client_id: "c1", client_api_id: null,
   recipient: "+2250700000000", recipient_name: "Bob", message_type: "text",
   content: "Hi", media_url: null, media_mimetype: null, media_filename: null,
   extra_data: null, direction: "outbound", status: "delivered",

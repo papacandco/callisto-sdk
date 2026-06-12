@@ -658,7 +658,7 @@ Carries both `otpId` (populated by `getStatus`) and `id` (populated by `list` ro
 | `getId()` | `String` |
 | `getInstanceId()` | `String` |
 | `getClientId()` | `String` |
-| `getApiClientId()` | `String` |
+| `getClientApiId()` | `String` |
 | `getRecipient()` | `String` |
 | `getRecipientName()` | `String` |
 | `getMessageType()` | `String` |

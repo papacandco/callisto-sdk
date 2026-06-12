@@ -94,7 +94,7 @@ module Callisto
   # A WhatsApp message record.
   class WhatsAppMessage < Model
     self.fields = %i[
-      id instance_id client_id api_client_id recipient recipient_name message_type
+      id instance_id client_id client_api_id recipient recipient_name message_type
       content media_url media_mimetype media_filename extra_data direction status
       whatsapp_message_id error_code error_message retry_count is_billable cost
       sent_at delivered_at read_at scheduled_at created_at updated_at processor_identifier

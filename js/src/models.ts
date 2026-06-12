@@ -169,7 +169,7 @@ export interface WhatsAppMessage {
   id: string;
   instance_id: string;
   client_id: string;
-  api_client_id: string | null;
+  client_api_id: string | null;
   recipient: string;
   recipient_name: string | null;
   message_type: string;

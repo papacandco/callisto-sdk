@@ -19,7 +19,7 @@ INSTANCE = {
 }
 
 MESSAGE = {
-    "id": "msg_9", "instance_id": "inst_1", "client_id": "c1", "api_client_id": "ac1",
+    "id": "msg_9", "instance_id": "inst_1", "client_id": "c1", "client_api_id": "ac1",
     "recipient": "+2250700000000", "recipient_name": "Bob", "message_type": "text",
     "content": "Hi", "media_url": None, "media_mimetype": None, "media_filename": None,
     "extra_data": None, "direction": "outbound", "status": "delivered",

@@ -207,7 +207,7 @@ class WhatsAppMessage:
     id: str
     instance_id: Optional[str] = None
     client_id: Optional[str] = None
-    api_client_id: Optional[str] = None
+    client_api_id: Optional[str] = None
     recipient: Optional[str] = None
     recipient_name: Optional[str] = None
     message_type: Optional[str] = None

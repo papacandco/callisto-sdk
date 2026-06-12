@@ -18,8 +18,8 @@ public class WhatsAppMessage {
     @JsonProperty("client_id")
     private String clientId;
 
-    @JsonProperty("api_client_id")
-    private String apiClientId;
+    @JsonProperty("client_api_id")
+    private String clientApiId;
 
     @JsonProperty("recipient")
     private String recipient;
@@ -102,8 +102,8 @@ public class WhatsAppMessage {
         return clientId;
     }
 
-    public String getApiClientId() {
-        return apiClientId;
+    public String getClientApiId() {
+        return clientApiId;
     }
 
     public String getRecipient() {

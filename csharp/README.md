@@ -674,7 +674,7 @@ Carries both `OtpId` (populated by `GetStatus`) and `Id` (populated by `List` ro
 | `Id` | `string` | `id` |
 | `InstanceId` | `string?` | `instance_id` |
 | `ClientId` | `string?` | `client_id` |
-| `ApiClientId` | `string?` | `api_client_id` |
+| `ClientApiId` | `string?` | `client_api_id` |
 | `Recipient` | `string?` | `recipient` |
 | `RecipientName` | `string?` | `recipient_name` |
 | `MessageType` | `string?` | `message_type` |
