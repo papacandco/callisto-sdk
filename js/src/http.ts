@@ -1,5 +1,5 @@
 import type { ResolvedConfig } from "./config.js";
-import { errorFromStatus, NetworkError } from "./errors.js";
+import { ConfigurationError, errorFromStatus, NetworkError } from "./errors.js";
 import { ErrorReporter, tagRequest } from "./reporter.js";
 
 export type Query = Record<string, string | number | boolean | undefined>;
@@ -29,7 +29,7 @@ export class Transport {
 
   private authHeader(): string {
     if (!this.cfg.clientId || !this.cfg.apiKey) {
-      throw new Error(
+      throw new ConfigurationError(
         "Callisto: clientId and apiKey are required for messaging API calls " +
           "(pass options or set CALLISTO_CLIENT_ID / CALLISTO_API_KEY). " +
           "Error reporting works without them.",

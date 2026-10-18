@@ -1,6 +1,6 @@
 # callisto-sdk (Java)
 
-Official Callisto messaging API SDK for Java 11+.
+Official Callisto messaging API SDK for Java 11+, with error reporting and log shipping to callisto-logs.
 
 ## Requirements
 
@@ -16,14 +16,14 @@ Maven coordinates:
 <dependency>
     <groupId>com.callisto</groupId>
     <artifactId>callisto-sdk</artifactId>
-    <version>0.1.0</version>
+    <version>0.2.0</version>
 </dependency>
 ```
 
 Gradle:
 
 ```groovy
-implementation "com.callisto:callisto-sdk:0.1.0"
+implementation "com.callisto:callisto-sdk:0.2.0"
 ```
 
 ## Configuration
@@ -843,6 +843,170 @@ The reporter **never** transmits your `clientId`, `apiKey`, the `Authorization` 
 own dedicated HTTP client, never the main transport, so it never inherits the Basic-auth
 credentials. Its own failures (any exception or non-`202` response) are silently swallowed and never
 re-captured.
+
+## Logs
+
+The SDK can ship your application's own log lines to **callisto-logs** (OTLP/HTTP JSON), without an
+OpenTelemetry SDK. Records are queued in memory and sent in batches by a background daemon thread:
+a log call never throws and never waits on the network. If you already run an OpenTelemetry SDK or
+Collector, keep using it; this is for applications that do not.
+
+> **Do not log passwords, tokens, card numbers or other secrets.** The SDK does not scrub what you
+> send. callisto-logs masks sensitive keys and, by default, e-mail addresses, IPs and phone numbers,
+> but a secret written into a log line is your responsibility (platform terms, CGU 7.6).
+
+### Create a Logs key
+
+In the dashboard, open **Organization → API keys** (or **Monitoring → Logs → Sources**) and create a
+key of scope **Logs**. It has an access key `pk_` + 32 lowercase hex characters and a secret `sk_` +
+48 lowercase hex characters. A messaging API key is refused by callisto-logs (401), and a Logs key
+is refused by the messaging API: the two are separate.
+
+### Configuration
+
+| Builder method | Env var | Default | Meaning |
+| --- | --- | --- | --- |
+| `accessKey(String)` | `CALLISTO_LOGS_ACCESS_KEY` | none | `pk_…` of a Logs key |
+| `secret(String)` | `CALLISTO_LOGS_SECRET` | none | `sk_…` of that key |
+| `endpoint(String)` | `CALLISTO_LOGS_ENDPOINT` | `https://logs.callistosignal.com/v1/logs` | full POST URL |
+| `serviceName(String)` | `CALLISTO_SERVICE_NAME`, then `OTEL_SERVICE_NAME` | `unknown_service` | resource `service.name` |
+| `environment(String)` | `CALLISTO_ENVIRONMENT` | none | resource `deployment.environment.name` |
+| `flushTimeout(Duration)` | | `5s` | upper bound of `flush()` and `close()` |
+| `sender(LogSender)` / `clock(Clock)` | | built in | test seams (fake HTTP sender, fixed clock) |
+
+An explicit builder value wins over the environment variable.
+
+- No key and no secret: logs are **disabled**. Every call is a cheap no-op, nothing is sent and no
+  thread is started.
+- Only one of the two, a value that does not match `pk_[0-9a-f]{32}` / `sk_[0-9a-f]{48}`, or an
+  endpoint that is not an absolute `http(s)` URL: `build()` throws `ValidationException`, the same
+  error as missing messaging credentials. A typo fails at startup instead of silently losing every
+  log.
+
+### Quick start
+
+The standalone logger needs no messaging credentials:
+
+```java
+import com.callisto.sdk.logs.CallistoLogger;
+import java.util.Map;
+
+try (CallistoLogger logs = CallistoLogger.builder()
+        .accessKey("pk_...")          // or CALLISTO_LOGS_ACCESS_KEY
+        .secret("sk_...")             // or CALLISTO_LOGS_SECRET
+        .serviceName("checkout")
+        .environment("production")
+        .build()) {
+    logs.info("order paid", Map.of("order_id", 42, "paid", true));
+    logs.warn("stock low", Map.of("sku", "A-12", "left", 3));
+    logs.error("payment failed");
+} // close() flushes what is queued (bounded to 5 s)
+
+// Or entirely from the environment (a no-op logger when no Logs key is set):
+CallistoLogger logs = CallistoLogger.fromEnv();
+```
+
+Methods: `debug`, `info`, `warn`, `error` and `fatal`, each as `(String message)` or
+`(String message, Map<String, ?> attributes)`; `log(LogLevel level, ...)` and
+`log(String level, ...)` (`debug|info|warn|error|fatal`); `flush()`; `close()`; `droppedCount()`;
+`isEnabled()`.
+
+Attribute values can be strings, booleans, integers (sent as OTLP `intValue`), floating point
+numbers, `null` (the attribute is omitted), lists, arrays and nested maps. Anything else is sent as
+its `toString()`. Nesting deeper than 5 levels is stringified.
+
+On the messaging client, the same logger is `logs()`. It is built from the Logs settings you pass to
+the client (or the environment variables above) and inherits the client's `environment`. Without a
+Logs key it is a no-op logger. `client.close()` also closes it. The messaging credentials are never
+used for logs, and the Logs secret is never sent to the messaging API.
+
+```java
+CallistoClient callisto = new CallistoClient(
+        "your-client-id", "your-api-key",
+        null, null,            // baseUrl, timeout
+        null, null,            // httpClient, mapper
+        null, false,           // errorDsn, captureUnhandled
+        "production",          // environment (also used for logs)
+        null,                  // errorSender
+        CallistoLogger.builder().accessKey("pk_...").secret("sk_...").serviceName("checkout"));
+
+callisto.logs().info("sms sent", Map.of("to_country", "CI"));
+
+// With CALLISTO_LOGS_ACCESS_KEY / CALLISTO_LOGS_SECRET set, every constructor enables it:
+try (CallistoClient c = new CallistoClient(null, null)) {
+    c.logs().info("ready");
+}
+```
+
+### Trace correlation
+
+Two attribute keys tie a log line to a trace, and so to an error issue (which carries
+`context.trace.trace_id`):
+
+- `trace_id`: 32 hex characters, any case, not all zeros;
+- `span_id`: 16 hex characters, not all zeros.
+
+When valid they are moved to the record's `traceId` / `spanId` (lowercased) and removed from the
+attributes. An invalid value stays an ordinary attribute.
+
+```java
+logs.info("order paid", Map.of(
+        "order_id", 42,
+        "trace_id", "5b8efff798038103d269b633813fc60c",
+        "span_id", "eee19b7ec3c1b174"));
+```
+
+### java.util.logging handler
+
+`CallistoLogHandler` forwards `java.util.logging` records to a `CallistoLogger`, with no extra
+dependency:
+
+```java
+import com.callisto.sdk.logs.CallistoLogHandler;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
+Logger.getLogger("").addHandler(new CallistoLogHandler(logs));
+
+Logger.getLogger("shop.orders").info("order paid");
+Logger.getLogger("shop.orders").log(Level.SEVERE, "payment failed", exception);
+```
+
+| JUL | Sent as |
+| --- | --- |
+| `FINEST` … `CONFIG` | `debug` |
+| `INFO` | `info` |
+| `WARNING` | `warn` |
+| `SEVERE` | `error` |
+| formatted message (`{0}` parameters applied) | body |
+| `getLoggerName()` | attribute `logger.name` |
+| `getThrown()` | attributes `exception.type`, `exception.message`, `exception.stacktrace` |
+
+The handler honours its level and filter (`handler.setLevel(Level.WARNING)`). Records emitted while
+the logger is sending (from its worker or HTTP threads, from the JDK HTTP client's own loggers, or a
+re-entrant call) are dropped, never shipped again. `handler.close()` flushes the logger but does not
+close it: close the `CallistoLogger` yourself.
+
+### Delivery
+
+- Records wait in a bounded in-memory queue of **2 000**. When it is full, new records are dropped
+  and `droppedCount()` increases (it also counts records lost to a rejected batch or to a 401/403
+  pause).
+- A daemon worker sends a batch when **100** records are queued, every **5 s** otherwise, and on
+  `flush()` / `close()`. A batch holds at most 500 records or about 1 MB of JSON.
+- `429` and `503` are retried after `Retry-After` (seconds, capped at 60 s, 5 s when absent), network
+  errors after 1 s then 5 s: 3 attempts in total, then the batch is dropped. Records keep queueing
+  while a batch waits for its retry.
+- `400`, `413`, `415` and any other unexpected status drop the batch. `401` and `403` drop it and
+  pause sending for 60 s (records are dropped during the pause, then one new attempt is allowed).
+- `flush()` and `close()` are bounded to 5 s (`flushTimeout`) and never throw. Call `close()` (or
+  use try-with-resources) before the JVM exits: the worker is a daemon thread and queued records are
+  lost otherwise.
+- The body is truncated to 32 768 characters and string attribute values to 8 192, marked with a
+  trailing `…`; at most 128 attributes per record are kept.
+- The logger uses its own HTTP client (10 s per request), never the messaging transport. Its own
+  failures are swallowed: they are never logged through the logger and never sent to the error
+  reporter.
 
 ## Testing seam
 

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Net.Http;
 using System.Threading.Tasks;
 using Callisto.Sdk.Http;
+using Callisto.Sdk.Logs;
 using Callisto.Sdk.Reporting;
 using Callisto.Sdk.Resources;
 
@@ -44,6 +45,13 @@ public sealed class CallistoClient : IDisposable
     public ErrorReporter ErrorReporter => _reporter;
 
     /// <summary>
+    /// Log shipping to callisto-logs. A no-op logger unless a Logs key resolves (from the
+    /// <c>logsAccessKey</c> / <c>logsSecret</c> arguments or <c>CALLISTO_LOGS_ACCESS_KEY</c> /
+    /// <c>CALLISTO_LOGS_SECRET</c>). It never uses the messaging credentials or transport.
+    /// </summary>
+    public CallistoLogger Logs { get; }
+
+    /// <summary>
     /// Creates a client. Any of <paramref name="clientId"/>, <paramref name="apiKey"/>, and
     /// <paramref name="baseUrl"/> fall back to <c>CALLISTO_CLIENT_ID</c>,
     /// <c>CALLISTO_API_KEY</c>, and <c>CALLISTO_BASE_URL</c> respectively. Throws
@@ -68,6 +76,11 @@ public sealed class CallistoClient : IDisposable
     /// </param>
     /// <param name="environment">Optional environment tag. Falls back to <c>CALLISTO_ENVIRONMENT</c>.</param>
     /// <param name="errorSender">Optional injectable sender for the reporter (useful for tests).</param>
+    /// <param name="logsAccessKey">Logs key access key (<c>pk_…</c>). Falls back to <c>CALLISTO_LOGS_ACCESS_KEY</c>.</param>
+    /// <param name="logsSecret">Logs key secret (<c>sk_…</c>). Falls back to <c>CALLISTO_LOGS_SECRET</c>.</param>
+    /// <param name="logsEndpoint">Logs POST URL. Falls back to <c>CALLISTO_LOGS_ENDPOINT</c>.</param>
+    /// <param name="serviceName">Resource <c>service.name</c>. Falls back to <c>CALLISTO_SERVICE_NAME</c>, then <c>OTEL_SERVICE_NAME</c>.</param>
+    /// <param name="logSender">Optional injectable sender for the logger (useful for tests).</param>
     public CallistoClient(
         string? clientId = null,
         string? apiKey = null,
@@ -78,9 +91,26 @@ public sealed class CallistoClient : IDisposable
         string? errorDsn = null,
         bool? captureUnhandled = null,
         string? environment = null,
-        IErrorSender? errorSender = null)
+        IErrorSender? errorSender = null,
+        string? logsAccessKey = null,
+        string? logsSecret = null,
+        string? logsEndpoint = null,
+        string? serviceName = null,
+        ILogSender? logSender = null)
     {
         var config = Config.Resolve(clientId, apiKey, baseUrl, timeout, errorDsn, captureUnhandled, environment);
+
+        // Built before anything that starts a background task, so a Logs configuration error
+        // leaves nothing running behind the exception.
+        Logs = new CallistoLogger(new CallistoLoggerOptions
+        {
+            LogsAccessKey = logsAccessKey,
+            LogsSecret = logsSecret,
+            LogsEndpoint = logsEndpoint,
+            ServiceName = serviceName,
+            Environment = config.Environment,
+            Sender = logSender,
+        });
 
         _reporter = new ErrorReporter(config.ErrorDsn, config.Environment, errorSender);
         _captureUnhandled = config.CaptureUnhandled;
@@ -135,7 +165,10 @@ public sealed class CallistoClient : IDisposable
         TaskScheduler.UnobservedTaskException += _taskHandler;
     }
 
-    /// <summary>Releases the underlying HTTP resources and flushes the error reporter.</summary>
+    /// <summary>
+    /// Releases the underlying HTTP resources, flushes the error reporter and closes the logger
+    /// (flush, bounded to 5 s).
+    /// </summary>
     public void Dispose()
     {
         if (_domainHandler is not null)
@@ -150,6 +183,7 @@ public sealed class CallistoClient : IDisposable
             _taskHandler = null;
         }
 
+        Logs.Dispose();
         _reporter.Dispose();
         _transport.Dispose();
     }

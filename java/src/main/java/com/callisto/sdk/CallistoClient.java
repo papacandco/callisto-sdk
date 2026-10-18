@@ -1,6 +1,7 @@
 package com.callisto.sdk;
 
 import com.callisto.sdk.http.Transport;
+import com.callisto.sdk.logs.CallistoLogger;
 import com.callisto.sdk.reporting.ErrorReporter;
 import com.callisto.sdk.reporting.ErrorSender;
 import com.callisto.sdk.resources.Balance;
@@ -30,6 +31,7 @@ public class CallistoClient implements AutoCloseable {
 
     private final Transport transport;
     private final ErrorReporter errorReporter;
+    private final CallistoLogger logs;
     private final Balance balance;
     private final Sms sms;
     private final Otp otp;
@@ -55,7 +57,7 @@ public class CallistoClient implements AutoCloseable {
      * @param timeout  optional request timeout (defaults to 30s).
      */
     public CallistoClient(String clientId, String apiKey, String baseUrl, Duration timeout) {
-        this(Config.resolve(clientId, apiKey, baseUrl, timeout), null, null, null);
+        this(Config.resolve(clientId, apiKey, baseUrl, timeout), null, null, null, null);
     }
 
     /**
@@ -65,7 +67,7 @@ public class CallistoClient implements AutoCloseable {
      */
     public CallistoClient(String clientId, String apiKey, String baseUrl, Duration timeout,
                           HttpClient httpClient, ObjectMapper mapper) {
-        this(Config.resolve(clientId, apiKey, baseUrl, timeout), httpClient, mapper, null);
+        this(Config.resolve(clientId, apiKey, baseUrl, timeout), httpClient, mapper, null, null);
     }
 
     /**
@@ -78,11 +80,35 @@ public class CallistoClient implements AutoCloseable {
                           String errorDsn, Boolean captureUnhandled, String environment,
                           ErrorSender errorSender) {
         this(Config.resolve(clientId, apiKey, baseUrl, timeout, errorDsn, captureUnhandled, environment),
-                httpClient, mapper, errorSender);
+                httpClient, mapper, errorSender, null);
+    }
+
+    /**
+     * Creates a client that also ships logs to callisto-logs. {@code logs} carries the Logs key
+     * settings ({@code accessKey}, {@code secret}, {@code endpoint}, {@code serviceName}, ...);
+     * anything it leaves unset falls back to the {@code CALLISTO_LOGS_*} environment variables,
+     * and its environment defaults to this client's {@code environment}. Pass {@code null} to
+     * configure logs from the environment only. The messaging credentials are never used for logs.
+     *
+     * @throws com.callisto.sdk.errors.ValidationException when the Logs key is half set or
+     *                                                     malformed.
+     */
+    public CallistoClient(String clientId, String apiKey, String baseUrl, Duration timeout,
+                          HttpClient httpClient, ObjectMapper mapper,
+                          String errorDsn, Boolean captureUnhandled, String environment,
+                          ErrorSender errorSender, CallistoLogger.Builder logs) {
+        this(Config.resolve(clientId, apiKey, baseUrl, timeout, errorDsn, captureUnhandled, environment),
+                httpClient, mapper, errorSender, logs);
     }
 
     private CallistoClient(Config config, HttpClient httpClient, ObjectMapper mapper,
-                           ErrorSender errorSender) {
+                           ErrorSender errorSender, CallistoLogger.Builder logsBuilder) {
+        CallistoLogger.Builder lb = logsBuilder != null ? logsBuilder : CallistoLogger.builder();
+        if (lb.getEnvironment() == null && config.getEnvironment() != null) {
+            lb.environment(config.getEnvironment());
+        }
+        this.logs = lb.build();
+
         ObjectMapper resolvedMapper = mapper != null ? mapper : new ObjectMapper();
         this.transport = httpClient != null
                 ? new Transport(config, httpClient, resolvedMapper)
@@ -132,6 +158,15 @@ public class CallistoClient implements AutoCloseable {
     }
 
     /**
+     * The log shipper for callisto-logs. Always non-null; a no-op when no Logs key
+     * ({@code CALLISTO_LOGS_ACCESS_KEY} / {@code CALLISTO_LOGS_SECRET}) resolves. Closed by
+     * {@link #close()}.
+     */
+    public CallistoLogger logs() {
+        return logs;
+    }
+
+    /**
      * The error reporter (advanced use). Reachable for direct configuration; the three
      * {@code capture*} / {@code setUser} client methods are the supported surface. Always
      * non-null; a no-op when no DSN is configured.
@@ -173,6 +208,7 @@ public class CallistoClient implements AutoCloseable {
 
     @Override
     public void close() {
+        logs.close();
         errorReporter.close();
         transport.close();
     }

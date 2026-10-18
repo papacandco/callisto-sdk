@@ -17,7 +17,7 @@ import (
 const (
 	sdkName     = "callisto-sdk"
 	sdkLanguage = "go"
-	sdkVersion  = "0.1.0"
+	sdkVersion  = "0.2.0"
 )
 
 // validLevels are the only error levels accepted by the ingest contract.

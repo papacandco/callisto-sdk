@@ -206,6 +206,43 @@ client ID, API key, the `Authorization` header, or the outgoing request body (ph
 message content); only the server's error `body`, `status_code`, HTTP `method`, and request `path`
 leave the process. See each language README for the exact API and the opt-in handler details.
 
+## Logs
+
+Every SDK can also ship your application's log lines to **Callisto Logs**
+(`https://logs.callistosignal.com/v1/logs`, OpenTelemetry OTLP/HTTP), without an OpenTelemetry SDK.
+It needs an API key with the **Logs** scope, created in the dashboard under Organization → API keys
+or Monitoring → Logs → Sources. That key (`pk_…` plus a secret `sk_…`) only sends logs: it cannot
+send messages, and your messaging API key cannot send logs.
+
+```
+logger.info("order paid", { order_id: 42, trace_id: "5b8efff798038103d269b633813fc60c" })
+logger.debug | info | warn | error | fatal (message[, attributes])
+logger.flush()   logger.close()
+```
+
+The logger works on its own (no messaging credentials needed) and is also available as
+`client.logs` on the messaging client. A `trace_id` / `span_id` attribute links the log to the
+error issue that carries the same trace.
+
+| Environment variable | Default | Meaning |
+| --- | --- | --- |
+| `CALLISTO_LOGS_ACCESS_KEY` | none | `pk_…` of a Logs key. Absent (with the secret) → logging disabled, a no-op. |
+| `CALLISTO_LOGS_SECRET` | none | `sk_…` of that key. Setting only one of the two is a configuration error. |
+| `CALLISTO_LOGS_ENDPOINT` | `https://logs.callistosignal.com/v1/logs` | Full POST URL. |
+| `CALLISTO_SERVICE_NAME` | `OTEL_SERVICE_NAME`, else `unknown_service` | The service the logs come from. |
+| `CALLISTO_ENVIRONMENT` | none | Sent as `deployment.environment.name`. |
+
+Logs are queued in memory and sent in batches in the background (every 5 s, or once 100 lines are
+waiting), with retries on rate limits. Logging never throws and never waits on the network.
+**PHP is the exception:** it sends synchronously, in batches of 100 and at the end of the request,
+with a 3 s timeout and no retry. Python, Go and Java ship an adapter for their standard logging
+(`logging.Handler`, `slog.Handler`, `java.util.logging.Handler`), and PHP ships a PSR-3 logger.
+
+**Do not log passwords, tokens, card numbers or other secrets.** Callisto Logs masks known secret
+fields and, by default, e-mail addresses, IP addresses and phone numbers, but it cannot catch
+everything. Logs are kept for the period of your plan and are not backed up. Full contract:
+[docs/superpowers/specs/2026-10-18-sdk-log-shipping-design.md](docs/superpowers/specs/2026-10-18-sdk-log-shipping-design.md).
+
 ## Per-language guides
 
 The READMEs below document every method, parameter, model field, enum, and error for each implementation:

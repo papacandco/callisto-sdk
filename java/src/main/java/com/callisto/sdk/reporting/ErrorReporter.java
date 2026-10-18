@@ -33,7 +33,7 @@ public final class ErrorReporter {
     /** SDK metadata reported under {@code context.sdk}. */
     public static final String SDK_NAME = "callisto-sdk";
     public static final String SDK_LANGUAGE = "java";
-    public static final String SDK_VERSION = "0.1.0";
+    public static final String SDK_VERSION = "0.2.0";
 
     private static final List<String> LEVELS = List.of("fatal", "error", "warning", "info");
 

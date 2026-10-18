@@ -1,7 +1,8 @@
 # Callisto Go SDK
 
 Official Go client for the **Callisto messaging API** — send SMS, one-time passwords (OTP), and
-WhatsApp messages, publish multi-channel notifications, and check your account balance.
+WhatsApp messages, publish multi-channel notifications, check your account balance, and ship your
+application logs to callisto-logs.
 
 - Module: `github.com/papacandco/callisto-sdk/go`
 - Package: `callisto`
@@ -78,6 +79,7 @@ back to an environment variable when its `Options` field is empty.
 | `ErrorDSN`         | `CALLISTO_APP_ERROR_DSN`  | — (error reporting disabled when absent) |
 | `Environment`      | `CALLISTO_ENVIRONMENT`| —                                        |
 | `ErrorSender`      | —                     | default HTTP sender (mainly for testing) |
+| `LogsAccessKey`, `LogsSecret`, `LogsEndpoint`, `ServiceName`, `LogsFlushTimeout`, `LogSender` | see [Logs](#logs) | `client.Logs` is a no-op without a Logs key |
 
 If `ClientID` or `APIKey` cannot be resolved, `NewClient` returns an error. Any trailing slash on
 the base URL is trimmed. Credentials are sent as HTTP Basic auth (`base64(client_id:api_key)`) on
@@ -296,6 +298,153 @@ The reporter uses its own HTTP client (never the authenticated transport) and **
 your client ID, API key, the `Authorization` header, or the outgoing request body (which carries
 phone numbers and message content). Only the server's error `body`, `status_code`, HTTP `method`,
 and request `path` ever leave the process.
+
+## Logs
+
+The SDK can ship your application's own log lines to **callisto-logs** (OTLP/HTTP JSON), with no
+OpenTelemetry SDK. Records are queued in memory and sent in batches by one background goroutine. A
+log call never blocks on the network and never panics. If you already run an OpenTelemetry SDK or
+Collector, keep using it. This feature is for apps that do not.
+
+### Create a Logs key
+
+In the dashboard, open **Organization → API keys** (or **Monitoring → Logs → Sources**) and create
+an API key with the **Logs** scope. You get an access key `pk_…` (32 hex characters) and a secret
+`sk_…` (48 hex characters). A messaging API key cannot ship logs, and a Logs key cannot call the
+messaging API.
+
+### Configuration
+
+Every setting is optional and falls back to an environment variable:
+
+| `LoggerConfig` field | `Options` field    | Env var                                         | Default                                   |
+| -------------------- | ------------------ | ----------------------------------------------- | ----------------------------------------- |
+| `AccessKey`          | `LogsAccessKey`    | `CALLISTO_LOGS_ACCESS_KEY`                      | none                                      |
+| `Secret`             | `LogsSecret`       | `CALLISTO_LOGS_SECRET`                          | none                                      |
+| `Endpoint`           | `LogsEndpoint`     | `CALLISTO_LOGS_ENDPOINT`                        | `https://logs.callistosignal.com/v1/logs` |
+| `ServiceName`        | `ServiceName`      | `CALLISTO_SERVICE_NAME`, then `OTEL_SERVICE_NAME` | `unknown_service`                       |
+| `Environment`        | `Environment`      | `CALLISTO_ENVIRONMENT`                          | none (attribute omitted)                  |
+| `FlushTimeout`       | `LogsFlushTimeout` | none                                            | `5s`                                      |
+| `HTTPClient`         | none               | none                                            | its own `*http.Client`, 10s timeout       |
+| `Sender`             | `LogSender`        | none                                            | default HTTP sender (mainly for testing)  |
+| `Clock`              | none               | none                                            | `time.Now` (mainly for testing)           |
+
+- No access key and no secret: logging is **disabled**. Every call is a cheap no-op, nothing is
+  sent, and no goroutine is started.
+- Only one of the two, a value that is not `pk_` + 32 lowercase hex / `sk_` + 48 lowercase hex,
+  or an endpoint that is not an absolute `http(s)` URL: `NewLogger` (or `NewClient`) returns a
+  configuration error, so a typo cannot silently lose every log.
+
+### Quick start
+
+Standalone (no messaging credentials needed):
+
+```go
+logger, err := callisto.NewLogger(callisto.LoggerConfig{
+	AccessKey:   "pk_…", // or CALLISTO_LOGS_ACCESS_KEY
+	Secret:      "sk_…", // or CALLISTO_LOGS_SECRET
+	ServiceName: "checkout",
+	Environment: "production",
+})
+if err != nil {
+	log.Fatal(err)
+}
+defer logger.Close(context.Background()) // sends what is queued, then stops
+
+logger.Info("order paid", map[string]any{"order_id": 42, "paid": true})
+logger.Warn("slow payment provider", map[string]any{"provider": "hub2", "ms": 2300})
+logger.Log(callisto.LogLevelError, "refund failed", nil)
+```
+
+On the messaging client, the same logger is `client.Logs`, built from the `Logs*` options (or the
+env vars). It is a no-op logger when no Logs key resolves, and `client.Close()` also closes it. The
+messaging credentials are never used for logs, and the Logs secret never goes to the messaging API.
+
+```go
+client, _ := callisto.NewClient(callisto.Options{
+	ClientID: "...", APIKey: "...",
+	LogsAccessKey: "pk_…", LogsSecret: "sk_…",
+	ServiceName: "checkout",
+})
+defer client.Close()
+
+client.Logs.Info("sms sent", map[string]any{"count": 3})
+```
+
+Methods: `Debug`, `Info`, `Warn`, `Error`, `Fatal(msg string, attrs map[string]any)`,
+`Log(level, msg, attrs)`, `Flush(ctx) error`, `Close(ctx) error`, `DroppedCount() uint64`,
+`Enabled() bool`. `Fatal` records a `FATAL` line; unlike `log.Fatal` it does **not** exit the
+process. `attrs` may be nil or nested: strings, bools, integers (sent as OTLP `intValue`), floats,
+slices and maps are mapped to OTLP values, nil values are left out, and anything else is turned
+into a string. The body is cut at 32 768 characters, string values at 8 192 (the cut ends with
+`…`), and a record keeps at most 128 attributes (the first 128 by key).
+
+### Trace correlation
+
+Two reserved attributes tie a log to a trace, and so to an error issue (which carries
+`context.trace.trace_id`):
+
+- `trace_id`: 32 hex characters, any case, not all zeros;
+- `span_id`: 16 hex characters, not all zeros.
+
+When valid they become the record's `traceId` / `spanId` (lowercased) and are removed from the
+attributes. Otherwise they stay as ordinary attributes.
+
+```go
+logger.Error("payment declined", map[string]any{
+	"trace_id": span.SpanContext().TraceID().String(),
+	"span_id":  span.SpanContext().SpanID().String(),
+})
+```
+
+### The `log/slog` handler
+
+`(*Logger).Handler()` returns a standard-library `slog.Handler`:
+
+```go
+slog.SetDefault(slog.New(logger.Handler()))
+
+slog.With("app", "checkout").WithGroup("http").
+	Info("request done", "status", 201, "trace_id", traceID)
+slog.Error("config failed", "err", err)
+```
+
+- Levels: below `Info` → debug, `Info` → info, `Warn` → warn, `Error` and above → error.
+- Attributes become record attributes and groups become nested maps (`http` → `{status: 201}`).
+  `WithAttrs` / `WithGroup`, inline groups (`slog.Group("", …)`) and `slog.LogValuer` work.
+  Empty groups are left out.
+- A top-level `trace_id` / `span_id` attribute is used for trace correlation, as above.
+- The first top-level attribute holding an `error` also sets `exception.type` (the Go type, for
+  example `*fs.PathError`) and `exception.message`.
+- Records emitted from inside the logger's own send (for example by an HTTP round-tripper that
+  logs through the same handler) are dropped, never shipped again.
+- The handler does not filter by level. To ship only `Info` and above, filter before it.
+
+### Delivery semantics
+
+- The queue holds at most **2 000** records. When it is full, new records are dropped and counted
+  in `DroppedCount()`, which also counts records lost to a rejected or failed batch.
+- A batch is sent when 100 records are queued, every **5 s** otherwise, and on `Flush` / `Close`.
+  A batch holds at most 500 records or about 1 MB of JSON.
+- `429` and `503` are retried after `Retry-After` (seconds, capped at 60 s, 5 s when missing),
+  and network errors after 1 s then 5 s, up to **3** attempts in total. Then the batch is dropped.
+  New records keep queueing while a batch waits for its retry.
+- `400`, `413`, `415` and any other unexpected status drop the batch at once.
+- `401` / `403` (bad key, or a plan without logs or suspended) drop the batch and **pause sending
+  for 60 s**. Records logged during the pause are dropped, then one new attempt is allowed.
+- `Flush(ctx)` and `Close(ctx)` are bounded by `ctx` and `FlushTimeout` (5 s by default). They
+  return the context error when the bound was hit, never a delivery error. Call `Close` before the
+  process exits, or the last records (up to 5 s of logs) are lost.
+- Each request has a 10 s HTTP timeout and carries `Authorization: Basic …`,
+  `Content-Type: application/json` and `User-Agent: callisto-sdk-go/<version>`.
+- The logger's own failures are swallowed. They never reach the error reporter and are never
+  logged through the logger itself.
+
+### Do not log secrets
+
+**Do not log passwords, tokens, card numbers or other secrets.** The SDK does not scrub what you
+send. callisto-logs masks sensitive keys and, by default, e-mails, IP addresses and phone numbers,
+but it cannot recognise every secret. This mirrors the platform terms (CGU 7.6).
 
 ## License
 

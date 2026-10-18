@@ -38,6 +38,10 @@ Client(
     error_dsn: Optional[str] = None,
     capture_unhandled: Optional[bool] = None,
     environment: Optional[str] = None,
+    logs_access_key: Optional[str] = None,
+    logs_secret: Optional[str] = None,
+    logs_endpoint: Optional[str] = None,
+    service_name: Optional[str] = None,
 )
 ```
 
@@ -50,7 +54,10 @@ Client(
 | `http_client` | `httpx.Client` | `None` | Optional pre-configured `httpx.Client` to inject (advanced use, e.g. custom transport, proxies, or testing). When provided, the SDK uses it as-is and Basic auth/timeout are **not** applied automatically — configure those on the client you pass in. |
 | `error_dsn` | `str` | `None` | Error-reporting ingest DSN. Falls back to env `CALLISTO_APP_ERROR_DSN`. Absent → error reporting is fully disabled (no-op). See [Error reporting](#error-reporting). |
 | `capture_unhandled` | `bool` | `False` | Install a global unhandled-exception handler. Falls back to env `CALLISTO_CAPTURE_UNHANDLED`. Requires `error_dsn`. |
-| `environment` | `str` | `None` | Optional environment tag (e.g. `"production"`) attached to reported errors. Falls back to env `CALLISTO_ENVIRONMENT`. |
+| `environment` | `str` | `None` | Optional environment tag (e.g. `"production"`) attached to reported errors and to shipped logs. Falls back to env `CALLISTO_ENVIRONMENT`. |
+| `logs_access_key` / `logs_secret` | `str` | `None` | A **Logs** API key for `client.logs`. Fall back to env `CALLISTO_LOGS_ACCESS_KEY` / `CALLISTO_LOGS_SECRET`. Absent → `client.logs` is a no-op. See [Logs](#logs). |
+| `logs_endpoint` | `str` | `https://logs.callistosignal.com/v1/logs` | callisto-logs POST URL. Falls back to env `CALLISTO_LOGS_ENDPOINT`. |
+| `service_name` | `str` | `unknown_service` | Resource `service.name` of shipped logs. Falls back to env `CALLISTO_SERVICE_NAME`, then `OTEL_SERVICE_NAME`. |
 
 `client_id` and `api_key` are required: pass them as arguments or via the `CALLISTO_CLIENT_ID` / `CALLISTO_API_KEY` environment variables. If neither is available, the constructor raises `ValueError`.
 
@@ -64,6 +71,10 @@ Client(
 | `CALLISTO_APP_ERROR_DSN` | `error_dsn` |
 | `CALLISTO_CAPTURE_UNHANDLED` | `capture_unhandled` |
 | `CALLISTO_ENVIRONMENT` | `environment` |
+| `CALLISTO_LOGS_ACCESS_KEY` | `logs_access_key` |
+| `CALLISTO_LOGS_SECRET` | `logs_secret` |
+| `CALLISTO_LOGS_ENDPOINT` | `logs_endpoint` |
+| `CALLISTO_SERVICE_NAME`, then `OTEL_SERVICE_NAME` | `service_name` |
 
 ```python
 import os
@@ -844,3 +855,121 @@ callisto = Client(
 ### PII / secrets guarantee
 
 The reporter **never** transmits your `client_id`, `api_key`, the `Authorization` header, or the **outgoing request body** (which carries phone numbers and message content). Only the server's error response `body`, `status_code`, the HTTP `method`, and the request `path` are ever sent. The reporter uses its own HTTP client and never inherits your Basic-auth credentials.
+
+## Logs
+
+The SDK can ship your application's own log lines to **callisto-logs** (OTLP/HTTP JSON), without an OpenTelemetry SDK. Records are batched and sent from a background thread: a log call never raises and never waits for the network. If you already run an OpenTelemetry SDK or Collector, keep using it; this is for apps that do not.
+
+> **Do not log passwords, tokens, card numbers or other secrets.** The SDK does not scrub what you send. callisto-logs masks sensitive keys and, by default, e-mails, IPs and phone numbers, but secrets do not belong in logs (platform terms, CGU 7.6).
+
+### Create a Logs key
+
+In the dashboard, open **Organization → API keys** (or **Monitoring → Logs → Sources**) and create a key with the **Logs** scope. You get an access key `pk_…` (32 hex characters) and a secret `sk_…` (48 hex characters). A messaging API key is refused by callisto-logs, and a Logs key is refused by the messaging API: they are separate.
+
+### Configuration
+
+| Argument | Env var | Default | Meaning |
+| --- | --- | --- | --- |
+| `logs_access_key` | `CALLISTO_LOGS_ACCESS_KEY` | none | `pk_…` of a Logs key |
+| `logs_secret` | `CALLISTO_LOGS_SECRET` | none | `sk_…` of that key |
+| `logs_endpoint` | `CALLISTO_LOGS_ENDPOINT` | `https://logs.callistosignal.com/v1/logs` | full POST URL |
+| `service_name` | `CALLISTO_SERVICE_NAME`, then `OTEL_SERVICE_NAME` | `unknown_service` | resource `service.name` |
+| `environment` | `CALLISTO_ENVIRONMENT` | none | resource `deployment.environment.name` |
+| `flush_timeout` | — | `5.0` | upper bound, in seconds, of `flush()` / `close()` |
+
+An explicit argument wins over the environment variable.
+
+- No key and no secret: logs are **disabled**. Every call is a cheap no-op and no thread is started.
+- Only one of the two, a malformed value, or an endpoint that is not an absolute `http(s)` URL: the constructor raises `ValueError` (the same error as missing messaging credentials), so a typo never silently loses every log.
+
+### Quick start
+
+Standalone, without messaging credentials:
+
+```python
+from callisto_sdk import CallistoLogger
+
+logs = CallistoLogger(
+    logs_access_key="pk_...",
+    logs_secret="sk_...",
+    service_name="checkout",
+    environment="production",
+)
+
+logs.info("order paid", {"order_id": 42, "paid": True})
+logs.warn("slow payment provider", {"provider": "hub2", "latency_ms": 2300})
+logs.error("refund failed", {"order": {"id": 42, "items": [1, 2]}})
+logs.log("debug", "cache miss")    # level: debug | info | warn | error | fatal
+
+logs.flush()   # send what is queued now (bounded, never raises)
+logs.close()   # flush, then stop the worker; later calls are no-ops
+```
+
+Or from the messaging client, which builds the same logger from its own arguments and the environment (and closes it in `client.close()`):
+
+```python
+from callisto_sdk import Client
+
+with Client(
+    client_id="...", api_key="...",                 # messaging credentials
+    logs_access_key="pk_...", logs_secret="sk_...",  # Logs key, never mixed with the above
+    service_name="checkout",
+) as callisto:
+    callisto.logs.info("sms sent", {"to_country": "CI"})
+```
+
+When no Logs key resolves, `client.logs` is a no-op logger.
+
+`message` is converted to a string. Attribute values can be `str`, `bool`, `int`, `float`, `None`, lists and dicts (nested); `None` values are dropped and any other type is stringified. Limits: the body is cut at 32 768 characters and string values at 8 192 (marked with a trailing `…`), at most 128 attributes per record, and nesting deeper than 5 levels is stringified.
+
+### Trace correlation
+
+Two attribute keys are reserved. A valid `trace_id` (32 hex characters, not all zeros) and `span_id` (16 hex characters, not all zeros) are moved to the record's `traceId` / `spanId` (lowercased), which ties the log line to a trace, and to an error issue carrying the same `context.trace.trace_id`. Invalid values stay ordinary attributes.
+
+```python
+logs.error("payment declined", {
+    "trace_id": "5b8efff798038103d269b633813fc60c",
+    "span_id": "eee19b7ec3c1b174",
+    "order_id": 42,
+})
+```
+
+### The `logging` adapter
+
+`CallistoLogHandler` is a standard `logging.Handler` that forwards records to a `CallistoLogger`:
+
+```python
+import logging
+from callisto_sdk import CallistoLogger, CallistoLogHandler
+
+logs = CallistoLogger(service_name="checkout")    # key and secret from the environment
+logging.getLogger().addHandler(CallistoLogHandler(logs, level=logging.INFO))
+
+log = logging.getLogger("checkout.payments")
+log.info("paid %s", "order 42", extra={"order_id": 42, "trace_id": "5b8efff798038103d269b633813fc60c"})
+try:
+    charge()
+except Exception:
+    log.exception("charge failed")
+```
+
+| `logging` | callisto-logs |
+| --- | --- |
+| `levelno` below `INFO` / `INFO` / `WARNING` / `ERROR` / `CRITICAL` | `debug` / `info` / `warn` / `error` / `fatal` |
+| `record.getMessage()` | body |
+| logger name | attribute `logger.name` |
+| `exc_info` | attributes `exception.type`, `exception.message`, `exception.stacktrace` |
+| keys passed in `extra` | attributes (`trace_id` / `span_id` included) |
+
+Records emitted while the logger itself is sending (for example by `httpx` on the worker thread) are dropped, never re-shipped, so attaching the handler to the root logger is safe.
+
+### Delivery semantics
+
+- Records go into a bounded in-memory queue of 2 000. When it is full, new records are dropped.
+- `logs.dropped_count` (read-only) counts every record lost without delivery: queue full, records dropped during a 401/403 pause (those queued when it starts and those logged during it), batches rejected with a non-retryable status, batches dropped after 3 attempts, and records still queued when `close()` gives up.
+- One daemon thread sends a batch when 100 records are queued, every 5 s otherwise, and on `flush()` / `close()`. A batch holds at most 500 records or about 1 MB of JSON.
+- `429` and `503` are retried after `Retry-After` (capped at 60 s, 5 s when absent), network errors after 1 s then 5 s; a batch is dropped after 3 attempts. Records keep queueing while a batch waits.
+- `400`, `413`, `415` and other unexpected statuses drop the batch. After `401` or `403` (bad key, or a plan without logs), sending pauses for 60 s and records are dropped meanwhile.
+- `flush()` and `close()` are bounded to 5 s (`flush_timeout`) and never raise. `close()` is registered with `atexit`, so queued records are sent at interpreter exit. There is no disk persistence: records still queued when the process is killed are lost.
+- Fork-safe (gunicorn or uWSGI with preload, `multiprocessing` with fork): in a child process the parent's queued records are discarded (never sent twice), the pause and counters are reset, and a new worker thread starts on the child's first record. A process that ends with `os._exit()` (as `multiprocessing` children do) skips `atexit`, so call `logs.close()` (or `flush()`) before such a worker exits.
+- The logger has its own HTTP client. It never sends your messaging `client_id` / `api_key` to callisto-logs, never sends the Logs secret anywhere else, and its own failures are swallowed (they never reach the error reporter).

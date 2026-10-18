@@ -2,7 +2,7 @@
 
 module Callisto
   # Entry point for the Callisto SDK. Access resources via the readers
-  # +sms+, +balance+, +otp+, +whatsapp+, and +notify+.
+  # +sms+, +balance+, +otp+, +whatsapp+, and +notify+, and log shipping via +logs+.
   #
   # @example
   #   client = Callisto::Client.new(client_id: "id", api_key: "key")
@@ -16,6 +16,9 @@ module Callisto
   class Client
     attr_reader :balance, :sms, :otp, :whatsapp, :notify, :error_reporter
 
+    # @return [Logger] the callisto-logs logger (a no-op logger when no Logs key resolves)
+    attr_reader :logs
+
     # @param client_id [String, nil] falls back to CALLISTO_CLIENT_ID
     # @param api_key [String, nil] falls back to CALLISTO_API_KEY
     # @param base_url [String, nil] falls back to CALLISTO_BASE_URL, then the default
@@ -23,17 +26,36 @@ module Callisto
     # @param error_dsn [String, nil] error-reporting DSN; falls back to CALLISTO_APP_ERROR_DSN
     # @param capture_unhandled [Boolean, nil] install the global unhandled-exception handler;
     #   falls back to CALLISTO_CAPTURE_UNHANDLED, then false
-    # @param environment [String, nil] optional environment tag; falls back to CALLISTO_ENVIRONMENT
+    # @param environment [String, nil] optional environment tag; falls back to CALLISTO_ENVIRONMENT.
+    #   Also the logs resource attribute deployment.environment.name
+    # @param logs_access_key [String, nil] pk_... of a Logs key; falls back to
+    #   CALLISTO_LOGS_ACCESS_KEY. Never the messaging credentials
+    # @param logs_secret [String, nil] sk_... of that key; falls back to CALLISTO_LOGS_SECRET
+    # @param logs_endpoint [String, nil] falls back to CALLISTO_LOGS_ENDPOINT, then the default
+    # @param service_name [String, nil] logs service.name; falls back to CALLISTO_SERVICE_NAME,
+    #   then OTEL_SERVICE_NAME, then "unknown_service"
     # @param transport [Transport, nil] optional transport seam for testing
     # @param error_reporter [ErrorReporter, nil] optional reporter seam for testing
+    # @param logs [Logger, nil] optional logger seam for testing
+    # @raise [ValidationError] on missing messaging credentials, or half / malformed Logs
+    #   credentials
     # @yieldparam client [Client] when a block is given, the client is yielded and then closed
     def initialize(client_id: nil, api_key: nil, base_url: nil,
                    timeout: Config::DEFAULT_TIMEOUT,
                    error_dsn: nil, capture_unhandled: nil, environment: nil,
-                   transport: nil, error_reporter: nil)
+                   logs_access_key: nil, logs_secret: nil, logs_endpoint: nil,
+                   service_name: nil,
+                   transport: nil, error_reporter: nil, logs: nil)
       config = Config.new(
         client_id: client_id, api_key: api_key, base_url: base_url, timeout: timeout,
         error_dsn: error_dsn, capture_unhandled: capture_unhandled, environment: environment
+      )
+
+      # Built first so a Logs configuration error leaves no reporter thread behind.
+      @logs = logs || Logger.new(
+        logs_access_key: logs_access_key, logs_secret: logs_secret,
+        logs_endpoint: logs_endpoint, service_name: service_name,
+        environment: config.environment
       )
 
       @error_reporter = error_reporter || ErrorReporter.new(
@@ -81,10 +103,12 @@ module Callisto
       @error_reporter&.set_user(user)
     end
 
-    # Releases any resources held by the underlying transport and flushes the error reporter.
+    # Releases any resources held by the underlying transport, flushes the error reporter and
+    # closes the logger (bounded flush of queued log records).
     def close
       @transport.close
       @error_reporter&.close
+      @logs&.close
     end
 
     private

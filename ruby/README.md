@@ -49,6 +49,8 @@ Callisto::Client.new(
   base_url:  nil,   # String, falls back to ENV["CALLISTO_BASE_URL"], then the default
   timeout:   30.0,  # Float, request timeout in seconds
   transport: nil    # Callisto::Transport, optional seam for testing
+  # also: error_dsn:, capture_unhandled:, environment: (see "Error reporting")
+  #       logs_access_key:, logs_secret:, logs_endpoint:, service_name: (see "Logs")
 )
 ```
 
@@ -831,6 +833,120 @@ Callisto::Client.new(client_id: "...", api_key: "...", error_dsn: "...", capture
 The reporter **never** transmits `client_id`, `api_key`, the `Authorization` header, or the
 **outgoing request body** (which carries phone numbers and message content). Only the server's
 error `body`, `status_code`, the HTTP `method`, and the request `path` ever leave the process.
+
+## Logs
+
+The SDK can ship your application's own log lines to **callisto-logs** (OTLP/HTTP JSON), with no
+OpenTelemetry SDK and no extra gem. Records are batched and sent from a background thread; a log
+call never raises and never waits on the network. If you already run an OpenTelemetry SDK or
+Collector, keep using it: this is for apps that do not.
+
+**Do not log passwords, tokens, card numbers or other secrets.** callisto-logs masks sensitive
+keys and, by default, e-mails, IPs and phone numbers, but the SDK does not scrub what you send.
+
+### Create a Logs key
+
+In the dashboard, open **Organization → API keys** (or **Monitoring → Logs → Sources**) and
+create a key of scope **Logs**. You get an access key (`pk_` + 32 hex) and a secret (`sk_` + 48
+hex). A Logs key only works for logs: your messaging `client_id` / `api_key` are refused by
+callisto-logs, and a Logs key is refused by the messaging API.
+
+### Logs configuration
+
+Every setting is optional and falls back to an environment variable. Keyword arguments win.
+
+| Keyword | Env var | Default | Meaning |
+| --- | --- | --- | --- |
+| `logs_access_key` | `CALLISTO_LOGS_ACCESS_KEY` | none | `pk_…` of a Logs key |
+| `logs_secret` | `CALLISTO_LOGS_SECRET` | none | `sk_…` of that key |
+| `logs_endpoint` | `CALLISTO_LOGS_ENDPOINT` | `https://logs.callistosignal.com/v1/logs` | full POST URL |
+| `service_name` | `CALLISTO_SERVICE_NAME`, then `OTEL_SERVICE_NAME` | `unknown_service` | resource `service.name` |
+| `environment` | `CALLISTO_ENVIRONMENT` | none | resource `deployment.environment.name` |
+| `flush_timeout` | — | `5.0` | bound, in seconds, of `flush` and `close` |
+
+- No key and no secret: logs are **disabled**. Every call is a cheap no-op and no thread starts.
+- Only one of the two, a malformed value, or an endpoint that is not an absolute `http(s)` URL:
+  the constructor raises `Callisto::ValidationError`, so a typo never silently loses every log.
+
+### Logs quick start
+
+Standalone, without messaging credentials:
+
+```ruby
+require "callisto"
+
+logger = Callisto::Logger.new(
+  logs_access_key: ENV["CALLISTO_LOGS_ACCESS_KEY"],
+  logs_secret: ENV["CALLISTO_LOGS_SECRET"],
+  service_name: "checkout",
+  environment: "production"
+)
+
+logger.info("order paid", { order_id: 42, paid: true })
+logger.warn("stock low", { sku: "A-1", left: 3 })
+logger.error("charge failed", { provider: "hub2", attempt: 2 })
+logger.log(:debug, "cache miss", { key: "cart:42" })
+
+logger.close # flushes what is queued (bounded to 5 s); also done at process exit
+```
+
+On the messaging client, the same logger is `client.logs`, built from the keywords passed to
+`Callisto::Client.new` (and the env vars). Without a Logs key, `client.logs` is a no-op logger.
+`client.close` (and the block form) also closes it.
+
+```ruby
+Callisto::Client.new(
+  client_id: "your-client-id", api_key: "your-api-key",
+  logs_access_key: "pk_...", logs_secret: "sk_...",
+  service_name: "checkout", environment: "production"
+) do |callisto|
+  callisto.sms.send(sender: "Acme", to: "+2250700000000", message: "Hi")
+  callisto.logs.info("sms sent", { to_country: "CI" })
+end
+```
+
+Methods: `debug`, `info`, `warn`, `error`, `fatal` (each `(message, attributes = {})`),
+`log(level, message, attributes = {})`, `flush`, `close`, `dropped_count`, `enabled?`.
+`message` is converted with `to_s`. Attribute values can be strings, symbols, booleans, integers,
+floats, `nil` (dropped), arrays and hashes (nested up to 5 levels); anything else is stringified.
+`Callisto::Logger` is not a drop-in for Ruby's standard `::Logger`; there is no Rails or stdlib
+adapter in this version.
+
+### Trace correlation
+
+Pass the current trace as the reserved attributes `trace_id` (32 hex) and `span_id` (16 hex).
+When valid, they are moved onto the record's `traceId` / `spanId`, which ties the log line to the
+trace and to any error issue carrying the same `context.trace.trace_id`. Invalid values stay as
+ordinary attributes.
+
+```ruby
+logger.error("payment failed", { order_id: 42, trace_id: trace_id, span_id: span_id })
+```
+
+### Delivery semantics
+
+- Records wait in a bounded in-memory queue of 2 000. When it is full, new records are dropped.
+- A background thread sends a batch when 100 records are queued, every 5 s otherwise, and on
+  `flush` / `close`. A batch is at most 500 records or about 1 MB of JSON.
+- `429` / `503` and network errors are retried, 3 attempts in total: after `Retry-After` (capped
+  at 60 s, 5 s when absent) for 429/503, after 1 s then 5 s for network errors. New records keep
+  queueing meanwhile.
+- `401` / `403` (bad key, no logs on the plan, suspended plan) pause sending for 60 s; records
+  are dropped during the pause. `400` / `413` / `415` and other statuses drop the batch.
+- `flush` and `close` are bounded to 5 s (`flush_timeout`) and never raise. An `at_exit` hook
+  closes every open logger. Records still queued when the process is killed are lost.
+- `logger.dropped_count` counts every record lost without delivery in this process: queue full,
+  dropped during a 401/403 pause (the queued ones and the new ones), a batch rejected by a
+  non-retryable status, a batch given up after 3 attempts, or records `close` could not send in
+  time.
+- Fork safe (Puma cluster mode, Unicorn, Resque, `Process.fork`): a forked child detects the new
+  pid on its next call and starts with an empty queue (the parent's records stay the parent's),
+  no pause, a zero dropped count and its own worker thread, started lazily. A logger built
+  before the fork keeps working in every worker; nothing to configure.
+- The body is cut at 32 768 characters and string attribute values at 8 192 (marked with `…`); a
+  record keeps at most 128 attributes.
+- The logger has its own HTTP path: it never sends your messaging credentials, and its own
+  failures are swallowed (never reported to the error reporter, never logged through itself).
 
 ## Development
 

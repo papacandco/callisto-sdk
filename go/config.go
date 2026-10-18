@@ -40,6 +40,26 @@ type Options struct {
 	// ErrorSender is an optional custom sender for reported errors (mainly for
 	// testing). When nil, the default HTTP sender is used.
 	ErrorSender ErrorSender
+
+	// LogsAccessKey is the pk_… of a Logs-scope API key (not the messaging
+	// key). Falls back to CALLISTO_LOGS_ACCESS_KEY. With no Logs key and no
+	// secret, client.Logs is a no-op logger.
+	LogsAccessKey string
+	// LogsSecret is the sk_… of that Logs key. Falls back to
+	// CALLISTO_LOGS_SECRET.
+	LogsSecret string
+	// LogsEndpoint is the full logs POST URL. Falls back to
+	// CALLISTO_LOGS_ENDPOINT, then DefaultLogsEndpoint.
+	LogsEndpoint string
+	// ServiceName is the service.name attached to shipped logs. Falls back to
+	// CALLISTO_SERVICE_NAME, then OTEL_SERVICE_NAME, then "unknown_service".
+	ServiceName string
+	// LogsFlushTimeout bounds client.Logs Flush and Close. Defaults to 5s.
+	LogsFlushTimeout time.Duration
+	// LogSender is an optional custom sender for shipped logs (mainly for
+	// testing). When nil, the logger's own HTTP client is used — never
+	// HTTPClient above.
+	LogSender LogSender
 }
 
 // config holds the resolved, validated configuration.

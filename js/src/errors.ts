@@ -37,6 +37,17 @@ export class NetworkError extends CallistoError {
   }
 }
 
+/**
+ * Invalid SDK configuration detected locally (missing messaging credentials,
+ * a malformed or half-configured Logs key, a bad endpoint URL). Thrown before
+ * any request is made; `statusCode` is `0`.
+ */
+export class ConfigurationError extends CallistoError {
+  constructor(message: string) {
+    super(message, 0, undefined);
+  }
+}
+
 export function errorFromStatus(
   status: number,
   message: string,

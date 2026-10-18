@@ -1,6 +1,9 @@
 package callisto
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // Client is the Callisto API client. Construct it with NewClient and access the
 // resources via the exported service fields. It is safe for concurrent use.
@@ -18,6 +21,9 @@ type Client struct {
 	WhatsApp *WhatsAppService
 	// Notify accesses the notify resource.
 	Notify *NotifyService
+	// Logs ships log records to callisto-logs. It is built from the Logs*
+	// Options (or env vars) and is a no-op logger when no Logs key resolves.
+	Logs *Logger
 }
 
 // NewClient builds a Client from the given Options, applying environment-variable
@@ -29,10 +35,25 @@ func NewClient(opts Options) (*Client, error) {
 		return nil, err
 	}
 
+	// Built before anything starts a goroutine, so a Logs configuration error
+	// leaks nothing. The messaging credentials are never passed to it.
+	logs, err := NewLogger(LoggerConfig{
+		AccessKey:    opts.LogsAccessKey,
+		Secret:       opts.LogsSecret,
+		Endpoint:     opts.LogsEndpoint,
+		ServiceName:  opts.ServiceName,
+		Environment:  cfg.environment,
+		FlushTimeout: opts.LogsFlushTimeout,
+		Sender:       opts.LogSender,
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	reporter := newErrorReporter(cfg.errorDSN, cfg.environment, opts.ErrorSender)
 	tr := newTransport(cfg, opts.HTTPClient, reporter)
 
-	c := &Client{transport: tr, reporter: reporter}
+	c := &Client{transport: tr, reporter: reporter, Logs: logs}
 	c.Balance = &BalanceService{t: tr}
 	c.SMS = &SMSService{t: tr}
 	c.OTP = &OTPService{t: tr}
@@ -78,8 +99,10 @@ func (c *Client) Recover() {
 	}
 }
 
-// Close flushes any pending reported events and stops the reporter's background
-// worker. It is safe to call multiple times.
+// Close flushes any pending reported events and queued logs, then stops the
+// background workers. The logs part is bounded by LogsFlushTimeout (default
+// 5s). It is safe to call multiple times.
 func (c *Client) Close() {
 	c.reporter.Close()
+	_ = c.Logs.Close(context.Background())
 }

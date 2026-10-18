@@ -38,6 +38,10 @@ const client = new CallistoClient({
 | `errorDsn`         | `string`  | no       | none                                | Error-reporting ingest DSN. Absent → error reporting is disabled (no-op). See [Error reporting](#error-reporting). |
 | `captureUnhandled` | `boolean` | no       | `false`                             | Install a global `uncaughtException` / `unhandledRejection` handler.                                              |
 | `environment`      | `string`  | no       | none                                | Optional tag attached to reported events as `context.environment`.                                                |
+| `logsAccessKey`    | `string`  | no       | `process.env.CALLISTO_LOGS_ACCESS_KEY` | `pk_…` of a Logs API key. See [Logs](#logs).                                                                   |
+| `logsSecret`       | `string`  | no       | `process.env.CALLISTO_LOGS_SECRET`  | `sk_…` of that Logs key.                                                                                           |
+| `logsEndpoint`     | `string`  | no       | `https://logs.callistosignal.com/v1/logs` | Full OTLP/HTTP logs POST URL.                                                                                |
+| `serviceName`      | `string`  | no       | `unknown_service`                   | `service.name` attached to shipped logs.                                                                           |
 
 \* `clientId` and `apiKey` are required **only for messaging** (SMS / OTP / WhatsApp / Notify / balance) and may be supplied via constructor options **or** environment variables. They are validated lazily: the client constructs fine without them (error reporting needs only a DSN), and a messaging call throws if they are still unresolved.
 
@@ -53,6 +57,10 @@ Any option you omit is read from the environment:
 | `CALLISTO_APP_ERROR_DSN`  | `errorDsn`     |
 | `CALLISTO_CAPTURE_UNHANDLED` | `captureUnhandled` (truthy: `1`/`true`) |
 | `CALLISTO_ENVIRONMENT` | `environment` |
+| `CALLISTO_LOGS_ACCESS_KEY` | `logsAccessKey` |
+| `CALLISTO_LOGS_SECRET` | `logsSecret` |
+| `CALLISTO_LOGS_ENDPOINT` | `logsEndpoint` |
+| `CALLISTO_SERVICE_NAME`, then `OTEL_SERVICE_NAME` | `serviceName` |
 
 ```ts
 // With CALLISTO_CLIENT_ID and CALLISTO_API_KEY set in the environment:
@@ -723,6 +731,7 @@ All errors extend the base `CallistoError`, which carries:
 | `RateLimitError`      | HTTP `429`. Also exposes `retryAfter?: number` (seconds, parsed from the `Retry-After` header). |
 | `ApiError`            | Any other non-2xx status.                                  |
 | `NetworkError`        | Transport failure (e.g. timeout/abort, DNS). `statusCode` is `0` and the original error is on `cause`. |
+| `ConfigurationError`  | Invalid local configuration: missing messaging credentials on a messaging call, or a half/malformed Logs key or bad `logsEndpoint` at construction. `statusCode` is `0`. |
 
 All error classes are exported from the package root.
 
@@ -809,6 +818,105 @@ This registers `process.on("uncaughtException")` and `process.on("unhandledRejec
 ### PII / secrets guarantee
 
 The reporter uses its **own** minimal `fetch` path straight to the DSN — never the main API transport — so it never inherits or transmits your credentials. It will **never** send your `clientId`, `apiKey`, the `Authorization` header, or the **outgoing request body** (which carries phone numbers and message content). Only the server's error `body`, `status_code`, HTTP `method`, and request `path` leave the process. This is enforced by tests.
+
+## Logs
+
+The SDK can ship your application's own log lines to **callisto-logs** (Monitoring → Logs in the dashboard), without an OpenTelemetry SDK. Records are batched and sent in the background; a log call never throws and never waits on the network. If you already run an OpenTelemetry SDK or Collector, keep using it: this is for apps that do not.
+
+### Create a Logs key
+
+In the dashboard, open **Organization → API keys** (or **Monitoring → Logs → Sources**) and create a key with the **Logs** scope. You get an access key (`pk_` + 32 hex characters) and a secret (`sk_` + 48 hex characters). A Logs key is not a messaging key: callisto-logs refuses messaging credentials, and the messaging API refuses a Logs key. The SDK never sends one where the other belongs.
+
+### Configuration
+
+| Option          | Env var                                       | Default                                   | Meaning                                         |
+| --------------- | --------------------------------------------- | ----------------------------------------- | ----------------------------------------------- |
+| `logsAccessKey` | `CALLISTO_LOGS_ACCESS_KEY`                    | none                                      | `pk_…` of the Logs key                          |
+| `logsSecret`    | `CALLISTO_LOGS_SECRET`                        | none                                      | `sk_…` of that key                              |
+| `logsEndpoint`  | `CALLISTO_LOGS_ENDPOINT`                      | `https://logs.callistosignal.com/v1/logs` | full POST URL                                   |
+| `serviceName`   | `CALLISTO_SERVICE_NAME`, then `OTEL_SERVICE_NAME` | `unknown_service`                     | resource `service.name`                         |
+| `environment`   | `CALLISTO_ENVIRONMENT`                        | none                                      | resource `deployment.environment.name`          |
+| `flushTimeout`  | —                                             | `5000`                                    | upper bound of `flush()` / `close()`, in ms     |
+
+An explicit option wins over the environment variable.
+
+- No key and no secret: logging is **disabled** and every call is a cheap no-op (no timer, no request).
+- Only one of the two, a value that is not `pk_` + 32 lowercase hex / `sk_` + 48 lowercase hex, or a `logsEndpoint` that is not an absolute `http(s)` URL: the constructor throws a `ConfigurationError`, so a typo cannot silently lose every log. (`ConfigurationError` extends `CallistoError`; the transport throws it too when messaging credentials are missing.)
+
+### Quick start
+
+Standalone, without messaging credentials:
+
+```ts
+import { CallistoLogger } from "callisto-sdk";
+
+const logger = new CallistoLogger({
+  logsAccessKey: process.env.CALLISTO_LOGS_ACCESS_KEY,
+  logsSecret: process.env.CALLISTO_LOGS_SECRET,
+  serviceName: "checkout",
+  environment: "production",
+});
+
+logger.info("order paid", { order_id: 42, paid: true });
+logger.warn("stock low", { sku: "A-12", left: 3 });
+logger.error("payment refused", { provider: "hub2", attempt: 2 });
+logger.log("debug", "cart recalculated", { items: [1, 2, 3] });
+
+// Before the process exits:
+await logger.close();
+```
+
+On the messaging client, the same logger is `client.logs`, built from the Logs options (and env vars) given to the client. It is a no-op when no Logs key resolves, and `client.close()` closes it:
+
+```ts
+const client = new CallistoClient({
+  clientId: "your_client_id",
+  apiKey: "your_api_key",
+  logsAccessKey: "pk_…",
+  logsSecret: "sk_…",
+  serviceName: "checkout",
+});
+
+client.logs.info("sms queued", { to_country: "CI" });
+await client.close(); // also flushes and closes client.logs
+```
+
+Methods: `debug`, `info`, `warn`, `error`, `fatal` (each `(message, attributes?)`), `log(level, message, attributes?)`, `flush()`, `close()`, plus `isEnabled` and `droppedCount()` for diagnostics.
+
+- `message` is converted to a string (truncated to 32 768 characters).
+- `attributes` is a flat or nested object. Strings, booleans, numbers (integers are sent as OTLP integers, `BigInt` too), `null` (dropped), arrays, `Map`/`Set` and nested objects are supported; a `Date` is sent as its ISO string, anything else is stringified. String values are truncated to 8 192 characters, at most 128 attributes are kept per record, and nesting deeper than 5 levels is stringified.
+
+### Trace correlation
+
+Two attribute keys tie a log line to a trace, and so to an error issue (which carries `context.trace.trace_id`):
+
+- `trace_id`: 32 hex characters, any case, not all zeros;
+- `span_id`: 16 hex characters, not all zeros.
+
+When valid, they are moved to the record's `traceId` / `spanId` (lowercased). When invalid, they stay as ordinary attributes.
+
+```ts
+logger.error("charge failed", {
+  trace_id: "5b8efff798038103d269b633813fc60c",
+  span_id: "eee19b7ec3c1b174",
+  order_id: 42,
+});
+```
+
+### Delivery
+
+- Records wait in an in-memory queue of at most **2 000** records. When it is full, new records are dropped and counted (`droppedCount()`).
+- A batch is sent as soon as **100** records are queued, every **5 s** otherwise (an `unref`'d timer, so it never keeps your process alive), and on `flush()` / `close()`. A request holds at most 500 records or about 1 MB of JSON. The body is OTLP/HTTP JSON, uncompressed.
+- `429` and `503` are retried after `Retry-After` (capped at 60 s, 5 s when absent); network errors and timeouts (10 s per request) after 1 s, then 5 s. A batch is dropped after 3 failed attempts. `400`, `413`, `415` and other statuses drop the batch without retry.
+- After a `401` or `403` (bad key, plan without logs, suspended plan), sending pauses for **60 s**: queued and new records are dropped during the pause, then sending resumes.
+- `flush()` and `close()` are bounded by `flushTimeout` (5 s by default) and never reject. When the event loop drains, open loggers get one last flush, but a process that exits explicitly (`process.exit`, a signal, a serverless handler returning) must `await logger.close()` first or lose what is still queued.
+- The logger's own failures are swallowed: they never throw, never go to the error reporter and are never logged through the logger.
+
+There is no framework adapter (winston, pino) in this version; call the logger directly or from your own transport.
+
+### Do not log secrets
+
+**Do not log passwords, tokens, card numbers or other secrets.** The SDK sends what you give it. callisto-logs masks sensitive keys and, by default, e-mail addresses, IP addresses and phone numbers, but it is not a scrubber for secrets you put in a message or an attribute (platform terms, CGU 7.6).
 
 ## Framework integrations
 

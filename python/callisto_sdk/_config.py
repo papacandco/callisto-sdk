@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Optional
+from urllib.parse import urlsplit
 
 DEFAULT_BASE_URL = "https://api.callistosignal.com/v1"
 
@@ -54,3 +56,84 @@ def resolve_config(
         capture_unhandled=capture_unhandled,
         environment=environment,
     )
+
+
+# -- logs (callisto-logs) ------------------------------------------------------
+
+DEFAULT_LOGS_ENDPOINT = "https://logs.callistosignal.com/v1/logs"
+DEFAULT_SERVICE_NAME = "unknown_service"
+
+_LOGS_ACCESS_KEY_RE = re.compile(r"^pk_[0-9a-f]{32}$")
+_LOGS_SECRET_RE = re.compile(r"^sk_[0-9a-f]{48}$")
+
+
+@dataclass(frozen=True)
+class LogsConfig:
+    """Resolved settings of a :class:`~callisto_sdk.CallistoLogger`.
+
+    ``access_key`` / ``secret`` are both ``None`` when logs are disabled.
+    """
+
+    access_key: Optional[str]
+    secret: Optional[str]
+    endpoint: str
+    service_name: str
+    environment: Optional[str] = None
+
+    @property
+    def enabled(self) -> bool:
+        return self.access_key is not None and self.secret is not None
+
+
+def _is_http_url(value: str) -> bool:
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and bool(parts.netloc)
+
+
+def resolve_logs_config(
+    logs_access_key: Optional[str] = None,
+    logs_secret: Optional[str] = None,
+    logs_endpoint: Optional[str] = None,
+    service_name: Optional[str] = None,
+    environment: Optional[str] = None,
+) -> LogsConfig:
+    """Resolve the logs settings: explicit argument first, then environment.
+
+    Both key and secret absent -> disabled config (no error). Exactly one of them,
+    a malformed value, or a non-http(s) endpoint -> ``ValueError`` (the SDK's
+    configuration error), so a typo never silently loses every log.
+    """
+    access_key = logs_access_key or os.environ.get("CALLISTO_LOGS_ACCESS_KEY") or None
+    secret = logs_secret or os.environ.get("CALLISTO_LOGS_SECRET") or None
+    endpoint = logs_endpoint or os.environ.get("CALLISTO_LOGS_ENDPOINT") or DEFAULT_LOGS_ENDPOINT
+    service_name = (
+        service_name
+        or os.environ.get("CALLISTO_SERVICE_NAME")
+        or os.environ.get("OTEL_SERVICE_NAME")
+        or DEFAULT_SERVICE_NAME
+    )
+    environment = environment or os.environ.get("CALLISTO_ENVIRONMENT") or None
+
+    if access_key is None and secret is None:
+        return LogsConfig(None, None, endpoint, service_name, environment)
+
+    if access_key is None or secret is None:
+        raise ValueError(
+            "Callisto: logs_access_key and logs_secret must be set together "
+            "(pass arguments or set CALLISTO_LOGS_ACCESS_KEY / CALLISTO_LOGS_SECRET)."
+        )
+    if not isinstance(access_key, str) or not _LOGS_ACCESS_KEY_RE.match(access_key):
+        raise ValueError(
+            "Callisto: logs_access_key is malformed (expected 'pk_' followed by 32 lowercase hex characters)."
+        )
+    if not isinstance(secret, str) or not _LOGS_SECRET_RE.match(secret):
+        raise ValueError(
+            "Callisto: logs_secret is malformed (expected 'sk_' followed by 48 lowercase hex characters)."
+        )
+    if not isinstance(endpoint, str) or not _is_http_url(endpoint):
+        raise ValueError("Callisto: logs_endpoint must be an absolute http(s) URL.")
+
+    return LogsConfig(access_key, secret, endpoint, service_name, environment)

@@ -57,6 +57,7 @@ new CallistoClient(
 | `CALLISTO_CLIENT_ID` | `clientId` |
 | `CALLISTO_API_KEY` | `apiKey` |
 | `CALLISTO_BASE_URL` | `baseUrl` |
+| `CALLISTO_LOGS_ACCESS_KEY`, `CALLISTO_LOGS_SECRET`, `CALLISTO_LOGS_ENDPOINT`, `CALLISTO_SERVICE_NAME` | `logsAccessKey`, `logsSecret`, `logsEndpoint`, `serviceName` (see [Logs](#logs)) |
 
 ```csharp
 Environment.SetEnvironmentVariable("CALLISTO_CLIENT_ID", "your-client-id");
@@ -851,6 +852,152 @@ Basic-authenticated transport.
 
 `Dispose()` on the client flushes pending events (briefly), stops the background worker, and
 unsubscribes any global handlers.
+
+## Logs
+
+The SDK can ship your application's own log lines to **callisto-logs** (OTLP/HTTP JSON), with no
+OpenTelemetry SDK and no extra package. Records are batched and sent by a background task; a log
+call never throws and never waits on the network. If you already run an OpenTelemetry SDK or
+Collector, keep using it: this is for apps that do not.
+
+> **Do not log passwords, tokens, card numbers or other secrets.** The SDK does not scrub
+> anything. callisto-logs masks sensitive keys and, by default, e-mails, IPs and phone numbers,
+> but you remain responsible for what you send (CGU 7.6).
+
+### Create a Logs key
+
+In the dashboard, open **Organization → API keys** (or **Monitoring → Logs → Sources**) and create
+an API key with the **Logs** scope. You get an access key (`pk_` + 32 hex) and a secret (`sk_` +
+48 hex). A messaging API key is refused by callisto-logs, and a Logs key is refused by the
+messaging API: the two never mix.
+
+### Configuration
+
+Each setting is optional and falls back to an environment variable.
+
+| `CallistoLoggerOptions` | Env var | Default | Meaning |
+| --- | --- | --- | --- |
+| `LogsAccessKey` | `CALLISTO_LOGS_ACCESS_KEY` | none | `pk_…` of a Logs key |
+| `LogsSecret` | `CALLISTO_LOGS_SECRET` | none | `sk_…` of that key |
+| `LogsEndpoint` | `CALLISTO_LOGS_ENDPOINT` | `https://logs.callistosignal.com/v1/logs` | full POST URL |
+| `ServiceName` | `CALLISTO_SERVICE_NAME`, then `OTEL_SERVICE_NAME` | `unknown_service` | resource `service.name` |
+| `Environment` | `CALLISTO_ENVIRONMENT` | none | resource `deployment.environment.name` |
+| `FlushTimeout` | — | 5 s | upper bound for `Flush` / `Dispose` |
+| `Sender`, `HttpMessageHandler`, `Clock` | — | — | injection points for tests |
+
+- No key and no secret: the logger is **disabled**. Every call is a cheap no-op, no background task
+  is started, nothing is sent.
+- Only one of the two, or a value that is not `pk_` + 32 lowercase hex / `sk_` + 48 lowercase hex:
+  the constructor throws `ArgumentException` (the same error as missing messaging credentials). A
+  typo fails at startup instead of silently losing every log.
+- `LogsEndpoint` must be an absolute `http(s)` URL (`ArgumentException` otherwise).
+
+### Quick start
+
+Standalone (no messaging credentials needed):
+
+```csharp
+using Callisto.Sdk.Logs;
+
+await using var logger = new CallistoLogger(new CallistoLoggerOptions
+{
+    LogsAccessKey = "pk_…",
+    LogsSecret = "sk_…",
+    ServiceName = "checkout",
+    Environment = "production",
+});
+
+logger.Info("order paid", new Dictionary<string, object?>
+{
+    ["order_id"] = 42,
+    ["paid"] = true,
+    ["amount"] = 15000.0,
+    ["items"] = new[] { "sku-1", "sku-2" },
+});
+logger.Warn("stock low", new Dictionary<string, object?> { ["sku"] = "sku-1", ["left"] = 3 });
+```
+
+Or from the messaging client, which builds `client.Logs` from the same constructor arguments and
+environment variables (`environment` is shared with the error reporter):
+
+```csharp
+using var callisto = new CallistoClient(
+    clientId: "your-client-id",
+    apiKey: "your-api-key",
+    environment: "production",
+    logsAccessKey: "pk_…",
+    logsSecret: "sk_…",
+    serviceName: "checkout");
+
+callisto.Logs.Error("payment failed", new Dictionary<string, object?> { ["order_id"] = 42 });
+```
+
+Without a Logs key, `callisto.Logs` is a no-op logger. `callisto.Dispose()` also closes the logger
+(flushing what is queued). The messaging credentials are never sent to callisto-logs, and the Logs
+secret is never sent anywhere else.
+
+Methods:
+
+```csharp
+logger.Debug(message, attributes);   // also Info, Warn, Error, Fatal
+logger.Log(CallistoLogLevel.Warn, message, attributes);
+logger.Log("warn", message, attributes);   // debug|info|warn|error|fatal; anything else → info
+logger.Flush();                     // or await logger.FlushAsync(cancellationToken)
+logger.Dispose();                   // or await logger.DisposeAsync(); later calls are no-ops
+long lost = logger.DroppedCount;    // diagnostics
+```
+
+`attributes` is an `IReadOnlyDictionary<string, object?>`. Values may be `string`, `bool`, any
+integer type, `float` / `double` / `decimal`, `null` (dropped), lists (any `IEnumerable`) and
+maps (any `IDictionary`), nested up to 5 levels. Other values are converted to strings.
+
+| Level | `severityNumber` | `severityText` |
+| --- | --- | --- |
+| `Debug` | 5 | `DEBUG` |
+| `Info` | 9 | `INFO` |
+| `Warn` | 13 | `WARN` |
+| `Error` | 17 | `ERROR` |
+| `Fatal` | 21 | `FATAL` |
+
+### Trace correlation
+
+Two attribute keys are reserved. A `trace_id` of 32 hex characters (not all zeros) and a `span_id`
+of 16 hex characters (not all zeros) are moved to the record's `traceId` / `spanId`, lowercased.
+Use the same `trace_id` your error reports carry (`context.trace.trace_id`) and callisto-logs links
+the log lines to the error issue. With `System.Diagnostics.Activity`:
+
+```csharp
+var activity = System.Diagnostics.Activity.Current;
+logger.Info("charging card", new Dictionary<string, object?>
+{
+    ["trace_id"] = activity?.TraceId.ToHexString(),
+    ["span_id"] = activity?.SpanId.ToHexString(),
+});
+```
+
+An invalid value stays an ordinary attribute.
+
+### Delivery semantics
+
+- The queue holds at most **2 000** records. When it is full, new records are dropped and counted
+  in `DroppedCount`.
+- One background `Task` sends a batch when **100** records are queued, every **5 s** otherwise, and
+  on `Flush` / `Dispose`. A batch is at most **500** records or about **1 MB** of JSON.
+- `429` / `503` and network errors are retried, up to **3** attempts in total: after `Retry-After`
+  seconds (capped at 60 s, 5 s when absent) for 429/503, after 1 s then 5 s for network errors.
+  New records keep queueing while a batch waits.
+- `400`, `413`, `415` and any other error status drop the batch.
+- `401` / `403` (wrong key, no logs on the plan, suspended plan) drop the batch and pause sending
+  for **60 s**; records logged during the pause are dropped, then sending resumes.
+- `DroppedCount` counts every lost record: full queue, pause, or a dropped batch.
+- `Flush` / `FlushAsync` / `Dispose` / `DisposeAsync` wait at most `FlushTimeout` (5 s) and never
+  throw. HTTP timeout is 10 s per request.
+- Guards: the message is cut to 32 768 characters, string values to 8 192 (marked with `…`), and
+  at most 128 attributes are kept per record.
+- The logger's own failures are swallowed: they are never logged, never sent to the error
+  reporter, and never re-shipped.
+- There is no `Microsoft.Extensions.Logging` adapter in this version (it would add a package
+  dependency); call `CallistoLogger` directly or wrap it in your own `ILogger`.
 
 ## Development
 

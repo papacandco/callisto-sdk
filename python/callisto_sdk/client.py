@@ -8,6 +8,7 @@ import httpx
 
 from ._config import resolve_config
 from ._http import Transport
+from ._logs import CallistoLogger
 from ._reporter import ErrorReporter
 from .resources.balance import BalanceResource
 from .resources.sms import SmsResource
@@ -28,6 +29,11 @@ class Client:
         capture_unhandled: Optional[bool] = None,
         environment: Optional[str] = None,
         reporter: Optional[ErrorReporter] = None,
+        logs_access_key: Optional[str] = None,
+        logs_secret: Optional[str] = None,
+        logs_endpoint: Optional[str] = None,
+        service_name: Optional[str] = None,
+        logs: Optional[CallistoLogger] = None,
     ):
         cfg = resolve_config(
             client_id,
@@ -37,6 +43,15 @@ class Client:
             error_dsn=error_dsn,
             capture_unhandled=capture_unhandled,
             environment=environment,
+        )
+        # Logs use their own key and HTTP path, never the messaging credentials.
+        # Built before the transport so a logs configuration error leaks nothing.
+        self.logs = logs or CallistoLogger(
+            logs_access_key=logs_access_key,
+            logs_secret=logs_secret,
+            logs_endpoint=logs_endpoint,
+            service_name=service_name,
+            environment=cfg.environment,
         )
         self.error_reporter = reporter or ErrorReporter(
             cfg.error_dsn, environment=cfg.environment
@@ -104,6 +119,7 @@ class Client:
 
     def close(self) -> None:
         try:
+            self.logs.close()
             self.error_reporter.flush()
             self.error_reporter.close()
         finally:
