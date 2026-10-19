@@ -860,11 +860,11 @@ The reporter **never** transmits your `client_id`, `api_key`, the `Authorization
 
 The SDK can ship your application's own log lines to **callisto-logs** (OTLP/HTTP JSON), without an OpenTelemetry SDK. Records are batched and sent from a background thread: a log call never raises and never waits for the network. If you already run an OpenTelemetry SDK or Collector, keep using it; this is for apps that do not.
 
-> **Do not log passwords, tokens, card numbers or other secrets.** The SDK does not scrub what you send. callisto-logs masks sensitive keys and, by default, e-mails, IPs and phone numbers, but secrets do not belong in logs (platform terms, CGU 7.6).
+> **Do not log passwords, tokens, card numbers or other secrets.** The SDK does not scrub what you send, and callisto-logs stores it as received: nothing is masked. Remove secrets and personal data you do not need before logging (platform terms, CGU 7.6).
 
 ### Create a Logs key
 
-In the dashboard, open **Organization → API keys** (or **Monitoring → Logs → Sources**) and create a key with the **Logs** scope. You get an access key `pk_…` (32 hex characters) and a secret `sk_…` (48 hex characters). A messaging API key is refused by callisto-logs, and a Logs key is refused by the messaging API: they are separate.
+In the dashboard, open **Organization → API keys** (or **Monitoring → Logs → Ingest keys**) and create a key with the **Logs** scope. You get an access key `pk_…` (32 hex characters) and a secret `sk_…` (48 hex characters). A messaging API key is refused by callisto-logs, and a Logs key is refused by the messaging API: they are separate.
 
 ### Configuration
 

@@ -211,7 +211,7 @@ leave the process. See each language README for the exact API and the opt-in han
 Every SDK can also ship your application's log lines to **Callisto Logs**
 (`https://logs.callistosignal.com/v1/logs`, OpenTelemetry OTLP/HTTP), without an OpenTelemetry SDK.
 It needs an API key with the **Logs** scope, created in the dashboard under Organization → API keys
-or Monitoring → Logs → Sources. That key (`pk_…` plus a secret `sk_…`) only sends logs: it cannot
+or Monitoring → Logs → Ingest keys. That key (`pk_…` plus a secret `sk_…`) only sends logs: it cannot
 send messages, and your messaging API key cannot send logs.
 
 ```
@@ -238,9 +238,9 @@ waiting), with retries on rate limits. Logging never throws and never waits on t
 with a 3 s timeout and no retry. Python, Go and Java ship an adapter for their standard logging
 (`logging.Handler`, `slog.Handler`, `java.util.logging.Handler`), and PHP ships a PSR-3 logger.
 
-**Do not log passwords, tokens, card numbers or other secrets.** Callisto Logs masks known secret
-fields and, by default, e-mail addresses, IP addresses and phone numbers, but it cannot catch
-everything. Logs are kept for the period of your plan and are not backed up. Full contract:
+**Do not log passwords, tokens, card numbers or other secrets.** Neither the SDK nor Callisto Logs
+masks what you send: logs are stored as received, so remove secrets and personal data you do not
+need before logging them. Logs are kept for the period of your plan and are not backed up. Full contract:
 [docs/superpowers/specs/2026-10-18-sdk-log-shipping-design.md](docs/superpowers/specs/2026-10-18-sdk-log-shipping-design.md).
 
 ## Per-language guides

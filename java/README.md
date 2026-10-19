@@ -852,12 +852,12 @@ a log call never throws and never waits on the network. If you already run an Op
 Collector, keep using it; this is for applications that do not.
 
 > **Do not log passwords, tokens, card numbers or other secrets.** The SDK does not scrub what you
-> send. callisto-logs masks sensitive keys and, by default, e-mail addresses, IPs and phone numbers,
-> but a secret written into a log line is your responsibility (platform terms, CGU 7.6).
+> send, and callisto-logs stores it as received: nothing is masked. Remove secrets and personal data
+> you do not need before logging (platform terms, CGU 7.6).
 
 ### Create a Logs key
 
-In the dashboard, open **Organization → API keys** (or **Monitoring → Logs → Sources**) and create a
+In the dashboard, open **Organization → API keys** (or **Monitoring → Logs → Ingest keys**) and create a
 key of scope **Logs**. It has an access key `pk_` + 32 lowercase hex characters and a secret `sk_` +
 48 lowercase hex characters. A messaging API key is refused by callisto-logs (401), and a Logs key
 is refused by the messaging API: the two are separate.

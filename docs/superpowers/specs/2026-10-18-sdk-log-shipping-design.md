@@ -15,7 +15,7 @@ for the ones who do not.
 
 - **Endpoint:** `POST https://logs.callistosignal.com/v1/logs` (OTLP/HTTP logs).
 - **Auth:** `Authorization: Basic base64("<access_key>:<secret>")`, an API key of **scope Logs**
-  created in the dashboard (Organization → API keys, or Monitoring → Logs → Sources):
+  created in the dashboard (Organization → API keys, or Monitoring → Logs → Ingest keys):
   - access key `pk_` + 32 lowercase hex;
   - secret `sk_` + 48 lowercase hex.
 
@@ -254,8 +254,8 @@ Rules:
    `client_id` / `api_key` to callisto-logs, and never sends the Logs secret anywhere else.
 2. The logger's own failures are swallowed. They are never sent to the error reporter and never
    logged through the logger itself (no recursion).
-3. The SDK does not scrub content: callisto-logs masks sensitive keys and, by default, e-mails,
-   IPs and phone numbers. The README states plainly: **do not log passwords, tokens, card numbers
+3. The SDK does not scrub content, and neither does callisto-logs today (its ingest wires
+   `scrub.Noop`; masking is a later milestone). The README states plainly: **do not log passwords, tokens, card numbers
    or other secrets**. This mirrors the platform terms (CGU 7.6).
 4. The error reporter is unchanged. Logs and errors are separate products; they only meet through
    `trace_id`.

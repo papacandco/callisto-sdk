@@ -861,12 +861,12 @@ call never throws and never waits on the network. If you already run an OpenTele
 Collector, keep using it: this is for apps that do not.
 
 > **Do not log passwords, tokens, card numbers or other secrets.** The SDK does not scrub
-> anything. callisto-logs masks sensitive keys and, by default, e-mails, IPs and phone numbers,
-> but you remain responsible for what you send (CGU 7.6).
+> anything, and callisto-logs stores logs as received: nothing is masked. Remove secrets and personal
+> data you do not need before logging (CGU 7.6).
 
 ### Create a Logs key
 
-In the dashboard, open **Organization → API keys** (or **Monitoring → Logs → Sources**) and create
+In the dashboard, open **Organization → API keys** (or **Monitoring → Logs → Ingest keys**) and create
 an API key with the **Logs** scope. You get an access key (`pk_` + 32 hex) and a secret (`sk_` +
 48 hex). A messaging API key is refused by callisto-logs, and a Logs key is refused by the
 messaging API: the two never mix.

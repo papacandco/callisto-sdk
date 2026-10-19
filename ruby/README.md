@@ -841,12 +841,13 @@ OpenTelemetry SDK and no extra gem. Records are batched and sent from a backgrou
 call never raises and never waits on the network. If you already run an OpenTelemetry SDK or
 Collector, keep using it: this is for apps that do not.
 
-**Do not log passwords, tokens, card numbers or other secrets.** callisto-logs masks sensitive
-keys and, by default, e-mails, IPs and phone numbers, but the SDK does not scrub what you send.
+**Do not log passwords, tokens, card numbers or other secrets.** Neither the SDK nor
+callisto-logs masks what you send: logs are stored as received. Remove secrets and personal data you
+do not need before logging (platform terms, CGU 7.6).
 
 ### Create a Logs key
 
-In the dashboard, open **Organization → API keys** (or **Monitoring → Logs → Sources**) and
+In the dashboard, open **Organization → API keys** (or **Monitoring → Logs → Ingest keys**) and
 create a key of scope **Logs**. You get an access key (`pk_` + 32 hex) and a secret (`sk_` + 48
 hex). A Logs key only works for logs: your messaging `client_id` / `api_key` are refused by
 callisto-logs, and a Logs key is refused by the messaging API.

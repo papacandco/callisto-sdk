@@ -825,7 +825,7 @@ The SDK can ship your application's own log lines to **callisto-logs** (Monitori
 
 ### Create a Logs key
 
-In the dashboard, open **Organization → API keys** (or **Monitoring → Logs → Sources**) and create a key with the **Logs** scope. You get an access key (`pk_` + 32 hex characters) and a secret (`sk_` + 48 hex characters). A Logs key is not a messaging key: callisto-logs refuses messaging credentials, and the messaging API refuses a Logs key. The SDK never sends one where the other belongs.
+In the dashboard, open **Organization → API keys** (or **Monitoring → Logs → Ingest keys**) and create a key with the **Logs** scope. You get an access key (`pk_` + 32 hex characters) and a secret (`sk_` + 48 hex characters). A Logs key is not a messaging key: callisto-logs refuses messaging credentials, and the messaging API refuses a Logs key. The SDK never sends one where the other belongs.
 
 ### Configuration
 
@@ -916,7 +916,7 @@ There is no framework adapter (winston, pino) in this version; call the logger d
 
 ### Do not log secrets
 
-**Do not log passwords, tokens, card numbers or other secrets.** The SDK sends what you give it. callisto-logs masks sensitive keys and, by default, e-mail addresses, IP addresses and phone numbers, but it is not a scrubber for secrets you put in a message or an attribute (platform terms, CGU 7.6).
+**Do not log passwords, tokens, card numbers or other secrets.** The SDK sends what you give it, and callisto-logs stores it as received: nothing is masked. Remove secrets and personal data you do not need before logging (platform terms, CGU 7.6).
 
 ## Framework integrations
 

@@ -308,7 +308,7 @@ Collector, keep using it. This feature is for apps that do not.
 
 ### Create a Logs key
 
-In the dashboard, open **Organization → API keys** (or **Monitoring → Logs → Sources**) and create
+In the dashboard, open **Organization → API keys** (or **Monitoring → Logs → Ingest keys**) and create
 an API key with the **Logs** scope. You get an access key `pk_…` (32 hex characters) and a secret
 `sk_…` (48 hex characters). A messaging API key cannot ship logs, and a Logs key cannot call the
 messaging API.
@@ -443,8 +443,8 @@ slog.Error("config failed", "err", err)
 ### Do not log secrets
 
 **Do not log passwords, tokens, card numbers or other secrets.** The SDK does not scrub what you
-send. callisto-logs masks sensitive keys and, by default, e-mails, IP addresses and phone numbers,
-but it cannot recognise every secret. This mirrors the platform terms (CGU 7.6).
+send, and callisto-logs stores it as received: nothing is masked. Remove secrets and personal data
+you do not need before logging. This mirrors the platform terms (CGU 7.6).
 
 ## License
 
