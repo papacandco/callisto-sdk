@@ -16,14 +16,14 @@ Maven coordinates:
 <dependency>
     <groupId>com.callisto</groupId>
     <artifactId>callisto-sdk</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
 </dependency>
 ```
 
 Gradle:
 
 ```groovy
-implementation "com.callisto:callisto-sdk:0.2.0"
+implementation "com.callisto:callisto-sdk:0.3.0"
 ```
 
 ## Configuration
@@ -801,7 +801,7 @@ nothing), so it is safe to construct unconditionally.
 
 | Variable | Maps to | Default | Meaning |
 | --- | --- | --- | --- |
-| `CALLISTO_APP_ERROR_DSN` | `errorDsn` | none | Ingest DSN. Absent → reporting fully disabled (no-op). |
+| `CALLISTO_APP_ERROR_DSN` | `errorDsn` | none | Ingest DSN. Must be `https` (`http` only for `localhost`, `127.0.0.1`, `::1`, `*.localhost`). Absent or invalid → reporting fully disabled (no-op). |
 | `CALLISTO_CAPTURE_UNHANDLED` | `captureUnhandled` | `false` | Install the global unhandled-exception handler. |
 | `CALLISTO_ENVIRONMENT` | `environment` | none | Optional tag included in `context.environment`. |
 
@@ -878,10 +878,19 @@ An explicit builder value wins over the environment variable.
 
 - No key and no secret: logs are **disabled**. Every call is a cheap no-op, nothing is sent and no
   thread is started.
-- Only one of the two, a value that does not match `pk_[0-9a-f]{32}` / `sk_[0-9a-f]{48}`, or an
-  endpoint that is not an absolute `http(s)` URL: `build()` throws `ValidationException`, the same
-  error as missing messaging credentials. A typo fails at startup instead of silently losing every
-  log.
+- **HTTPS only.** The endpoint must be an absolute `https` URL: the secret travels in the
+  `Authorization` header. Plain `http` is accepted only for `localhost`, `127.0.0.1`, `::1` and
+  `*.localhost` (local development). The error DSN follows the same rule.
+- Invalid settings are: only one of the two, a value that does not match `pk_[0-9a-f]{32}` /
+  `sk_[0-9a-f]{48}`, or an endpoint that breaks the HTTPS rule. What happens then depends on who
+  builds the logger:
+  - **`CallistoLogger.builder()...build()` (standalone)** throws `ValidationException`, the same
+    error as missing messaging credentials. A typo fails at startup instead of silently losing every
+    log.
+  - **`CallistoClient`** never throws because of the Logs settings. It logs **one** `WARNING` on the
+    `com.callisto.sdk.CallistoClient` `java.util.logging` logger, and `logs()` is a disabled no-op
+    logger; SMS, OTP and WhatsApp keep working. The warning never contains the key or the secret.
+    Missing messaging credentials still throw `ValidationException`.
 
 ### Quick start
 
@@ -913,11 +922,15 @@ Methods: `debug`, `info`, `warn`, `error` and `fatal`, each as `(String message)
 
 Attribute values can be strings, booleans, integers (sent as OTLP `intValue`), floating point
 numbers, `null` (the attribute is omitted), lists, arrays and nested maps. Anything else is sent as
-its `toString()`. Nesting deeper than 5 levels is stringified.
+its `toString()`. Each nested list, array or map keeps at most 128 items (the extra ones are
+dropped), and nesting deeper than 5 levels is stringified. A record encodes at most 2 048 values in
+total (scalars and containers, at every level; a list or map referenced several times counts each
+time): once that budget is spent, the remaining values and attributes are dropped.
 
 On the messaging client, the same logger is `logs()`. It is built from the Logs settings you pass to
 the client (or the environment variables above) and inherits the client's `environment`. Without a
-Logs key it is a no-op logger. `client.close()` also closes it. The messaging credentials are never
+Logs key, or with invalid Logs settings (one warning, see above), it is a no-op logger.
+`client.close()` also closes it. The messaging credentials are never
 used for logs, and the Logs secret is never sent to the messaging API.
 
 ```java

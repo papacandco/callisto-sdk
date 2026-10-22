@@ -11,6 +11,7 @@ using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using Callisto.Sdk.Errors;
+using Callisto.Sdk.Http;
 
 namespace Callisto.Sdk.Reporting;
 
@@ -83,7 +84,8 @@ public sealed class ErrorReporter : IDisposable
         _sdkLanguage = sdkLanguage;
         _sender = sender ?? new HttpErrorSender();
 
-        _enabled = _dsn is not null && Uri.IsWellFormedUriString(_dsn, UriKind.Absolute);
+        // https only (http on a loopback host); any other DSN leaves the reporter a silent no-op.
+        _enabled = _dsn is not null && SecureUrl.IsSecure(_dsn);
 
         if (_enabled)
         {

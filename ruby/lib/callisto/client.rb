@@ -16,7 +16,8 @@ module Callisto
   class Client
     attr_reader :balance, :sms, :otp, :whatsapp, :notify, :error_reporter
 
-    # @return [Logger] the callisto-logs logger (a no-op logger when no Logs key resolves)
+    # @return [Logger] the callisto-logs logger (a no-op logger when no Logs key resolves, or when
+    #   the Logs settings are invalid: one warning is printed)
     attr_reader :logs
 
     # @param client_id [String, nil] falls back to CALLISTO_CLIENT_ID
@@ -37,8 +38,9 @@ module Callisto
     # @param transport [Transport, nil] optional transport seam for testing
     # @param error_reporter [ErrorReporter, nil] optional reporter seam for testing
     # @param logs [Logger, nil] optional logger seam for testing
-    # @raise [ValidationError] on missing messaging credentials, or half / malformed Logs
-    #   credentials
+    # @raise [ValidationError] on missing messaging credentials. Invalid Logs settings (half pair,
+    #   malformed pk_/sk_, endpoint not https) never raise: one Kernel#warn, without the key or
+    #   the secret, and #logs is a disabled no-op logger
     # @yieldparam client [Client] when a block is given, the client is yielded and then closed
     def initialize(client_id: nil, api_key: nil, base_url: nil,
                    timeout: Config::DEFAULT_TIMEOUT,
@@ -51,12 +53,9 @@ module Callisto
         error_dsn: error_dsn, capture_unhandled: capture_unhandled, environment: environment
       )
 
-      # Built first so a Logs configuration error leaves no reporter thread behind.
-      @logs = logs || Logger.new(
-        logs_access_key: logs_access_key, logs_secret: logs_secret,
-        logs_endpoint: logs_endpoint, service_name: service_name,
-        environment: config.environment
-      )
+      # A Logs configuration error never breaks messaging: one warning, then a no-op logger.
+      @logs = logs || build_logs(logs_access_key, logs_secret, logs_endpoint, service_name,
+                                 config.environment)
 
       @error_reporter = error_reporter || ErrorReporter.new(
         dsn: config.error_dsn,
@@ -112,6 +111,15 @@ module Callisto
     end
 
     private
+
+    # The error message names the setting, never its value.
+    def build_logs(access_key, secret, endpoint, service_name, environment)
+      Logger.new(logs_access_key: access_key, logs_secret: secret, logs_endpoint: endpoint,
+                 service_name: service_name, environment: environment)
+    rescue ValidationError => e
+      Kernel.warn("#{e.message} Logs are disabled.")
+      Logger.disabled(service_name: service_name, environment: environment)
+    end
 
     # Installs an at_exit hook that inspects $! and reports an uncaught exception at level
     # fatal. Best-effort; never alters the process's default exit behavior.

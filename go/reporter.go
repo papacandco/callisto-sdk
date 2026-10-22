@@ -17,7 +17,7 @@ import (
 const (
 	sdkName     = "callisto-sdk"
 	sdkLanguage = "go"
-	sdkVersion  = "0.2.0"
+	sdkVersion  = "0.3.0"
 )
 
 // validLevels are the only error levels accepted by the ingest contract.
@@ -495,6 +495,8 @@ func sourceContext(file string, line int) map[string]any {
 	}
 }
 
+// isValidDSN accepts an https DSN, or http on a loopback host; anything else
+// leaves error reporting disabled.
 func isValidDSN(dsn string) bool {
-	return strings.HasPrefix(dsn, "http://") || strings.HasPrefix(dsn, "https://")
+	return isSecureURL(dsn)
 }

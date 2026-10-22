@@ -170,6 +170,36 @@ RSpec.describe Callisto::ErrorReporter do
       expect(sender.calls).to be_empty
     end
 
+    %w[
+      http://app.callistosignal.com/ingest/abc?key=deadbeef
+      http://127.0.0.2/ingest/abc
+      ftp://app.callistosignal.com/ingest/abc
+    ].each do |dsn|
+      it "is a silent no-op for the non-https DSN #{dsn}" do
+        sender = FakeSender.new
+        reporter = build_reporter(sender: sender, dsn: dsn)
+
+        expect(reporter.enabled?).to be(false)
+        reporter.capture_exception(StandardError.new("x"))
+        reporter.flush
+        expect(sender.calls).to be_empty
+      end
+    end
+
+    %w[
+      https://app.callistosignal.com/ingest/abc
+      http://localhost:8080/ingest/abc
+      http://127.0.0.1/ingest/abc
+      http://[::1]/ingest/abc
+      http://ingest.localhost/ingest/abc
+    ].each do |dsn|
+      it "is enabled for the DSN #{dsn}" do
+        reporter = build_reporter(sender: FakeSender.new, dsn: dsn)
+        expect(reporter.enabled?).to be(true)
+        reporter.close if reporter.respond_to?(:close)
+      end
+    end
+
     it "is a no-op for an invalid DSN" do
       sender = FakeSender.new
       reporter = build_reporter(sender: sender, dsn: "not a url")

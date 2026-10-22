@@ -4,7 +4,7 @@ namespace Callisto.Sdk;
 public static class SdkInfo
 {
     /// <summary>The package version (must equal <c>&lt;Version&gt;</c> in Callisto.Sdk.csproj).</summary>
-    public const string Version = "0.2.0";
+    public const string Version = "0.3.0";
 
     /// <summary>The OpenTelemetry <c>telemetry.sdk.language</c> name for .NET.</summary>
     public const string Language = "dotnet";

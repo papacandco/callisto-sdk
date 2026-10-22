@@ -8,7 +8,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"regexp"
 	"runtime"
@@ -189,9 +188,11 @@ func resolveLoggerSettings(cfg LoggerConfig) (loggerSettings, error) {
 	if !logsSecretPattern.MatchString(s.secret) {
 		return loggerSettings{}, errors.New("callisto: logs Secret must be sk_ followed by 48 lowercase hex characters")
 	}
-	u, err := url.Parse(s.endpoint)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return loggerSettings{}, errors.New("callisto: logs Endpoint must be an absolute http(s) URL")
+	if !isSecureURL(s.endpoint) {
+		return loggerSettings{}, errors.New(
+			"callisto: logs Endpoint must be an absolute https URL " +
+				"(http is accepted only for localhost, 127.0.0.1, ::1 and *.localhost)",
+		)
 	}
 	s.enabled = true
 	return s, nil
@@ -247,8 +248,10 @@ type Logger struct {
 
 // NewLogger builds a standalone Logger; it needs no messaging credentials. With
 // no access key and no secret (arguments or env) it returns a disabled no-op
-// logger. Half or malformed credentials, or a non-http(s) endpoint, return a
-// configuration error. Call Close before exit to send what is queued.
+// logger. Half or malformed credentials, or an endpoint that is not https (http
+// only on a loopback host), return a configuration error. (NewClient does not
+// fail on them: it logs one warning and keeps a no-op logger.) Call Close
+// before exit to send what is queued.
 func NewLogger(cfg LoggerConfig) (*Logger, error) {
 	return newLogger(cfg, loggerTuning{})
 }

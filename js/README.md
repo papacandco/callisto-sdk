@@ -42,6 +42,7 @@ const client = new CallistoClient({
 | `logsSecret`       | `string`  | no       | `process.env.CALLISTO_LOGS_SECRET`  | `sk_…` of that Logs key.                                                                                           |
 | `logsEndpoint`     | `string`  | no       | `https://logs.callistosignal.com/v1/logs` | Full OTLP/HTTP logs POST URL.                                                                                |
 | `serviceName`      | `string`  | no       | `unknown_service`                   | `service.name` attached to shipped logs.                                                                           |
+| `sendSourceContext` | `boolean` | no      | `true`                              | Attach masked source lines to reported stack frames. See [Source context](#source-context).                        |
 
 \* `clientId` and `apiKey` are required **only for messaging** (SMS / OTP / WhatsApp / Notify / balance) and may be supplied via constructor options **or** environment variables. They are validated lazily: the client constructs fine without them (error reporting needs only a DSN), and a messaging call throws if they are still unresolved.
 
@@ -61,6 +62,9 @@ Any option you omit is read from the environment:
 | `CALLISTO_LOGS_SECRET` | `logsSecret` |
 | `CALLISTO_LOGS_ENDPOINT` | `logsEndpoint` |
 | `CALLISTO_SERVICE_NAME`, then `OTEL_SERVICE_NAME` | `serviceName` |
+| `CALLISTO_SEND_SOURCE_CONTEXT` | `sendSourceContext` (`false` / `0` turns it off) |
+
+Environment variables are read only where a `process.env` exists. In a browser or a worker there is none: the lookup returns nothing and the client is built from the options you pass, without a `ReferenceError`.
 
 ```ts
 // With CALLISTO_CLIENT_ID and CALLISTO_API_KEY set in the environment:
@@ -772,7 +776,7 @@ When no DSN is configured the reporter is a complete no-op: nothing is sent and 
 
 ### Enabling
 
-Pass `errorDsn` (or set `CALLISTO_APP_ERROR_DSN`). The DSN **is** the full ingest POST URL, e.g. `https://app.callistosignal.com/ingest/<id>?key=<public_key>`:
+Pass `errorDsn` (or set `CALLISTO_APP_ERROR_DSN`). The DSN **is** the full ingest POST URL, e.g. `https://app.callistosignal.com/ingest/<id>?key=<public_key>`. It must use `https`; plain `http` is accepted only for a local collector (`localhost`, `127.0.0.1`, `::1` or a `*.localhost` name). Any other DSN disables error reporting and prints one `console.warn` (which never shows the DSN):
 
 ```ts
 const client = new CallistoClient({
@@ -790,6 +794,7 @@ const client = new CallistoClient({
 | `CALLISTO_APP_ERROR_DSN`         | `errorDsn`         | Absent → reporting disabled.                |
 | `CALLISTO_CAPTURE_UNHANDLED` | `captureUnhandled` | Truthy (`1` / `true`) installs the handler. |
 | `CALLISTO_ENVIRONMENT`       | `environment`      | Optional environment tag.                   |
+| `CALLISTO_SEND_SOURCE_CONTEXT` | `sendSourceContext` | `false` / `0` stops sending source lines.  |
 
 ### Public API
 
@@ -819,9 +824,24 @@ This registers `process.on("uncaughtException")` and `process.on("unhandledRejec
 
 The reporter uses its **own** minimal `fetch` path straight to the DSN — never the main API transport — so it never inherits or transmits your credentials. It will **never** send your `clientId`, `apiKey`, the `Authorization` header, or the **outgoing request body** (which carries phone numbers and message content). Only the server's error `body`, `status_code`, HTTP `method`, and request `path` leave the process. This is enforced by tests.
 
+### Source context
+
+In Node, when the source file can be read, each frame of one of your own exceptions carries up to 10 source lines on each side of the failing line (`pre_context`, `context_line`, `post_context`). Every one of these lines is masked before it leaves the process; the secret part becomes `[Filtered]`:
+
+- `sk_…` and `pk_…` keys (16+ hex characters), AWS access key ids (`AKIA…`);
+- the token after `Bearer` (the word `Bearer` stays);
+- the password in a URL (`postgres://user:[Filtered]@host`);
+- a line holding `-----BEGIN … PRIVATE KEY-----` (the whole line);
+- the value assigned with `=`, `==`, `===`, `=>` or `:` to a name that contains `secret`, `token`, `password`, `passwd`, `bearer`, `credential`, `signature`, `authorization`, `cookie` or `session`, or that has a `key` segment (`key`, `api_key`, `apiKey`, `ACCESS_KEY`, `x-api-key`, but not `keyboard` or `monkey`);
+- any quoted string of 40 or more characters made only of `A-Z a-z 0-9 + / = _ -`.
+
+Masking works by pattern, so it can miss a secret written in another shape. To send no source at all, set `sendSourceContext: false` (or `CALLISTO_SEND_SOURCE_CONTEXT=false`): frames then carry only the function, file and line. Frames of the SDK's own transport errors never carry source.
+
 ## Logs
 
 The SDK can ship your application's own log lines to **callisto-logs** (Monitoring → Logs in the dashboard), without an OpenTelemetry SDK. Records are batched and sent in the background; a log call never throws and never waits on the network. If you already run an OpenTelemetry SDK or Collector, keep using it: this is for apps that do not.
+
+> **Server only.** The Logs secret (`sk_…`) is a write key for your whole organization. Never put it in code that runs in a browser: anyone can read it from the bundle. In a web page (`window` and `document` defined, outside Node), `new CallistoLogger(...)` with a secret throws a `ConfigurationError` ("Callisto Logs secrets must not be used in a browser"), and `CallistoClient` turns its logger off with one `console.warn`. Ship browser logs through your own backend.
 
 ### Create a Logs key
 
@@ -841,7 +861,9 @@ In the dashboard, open **Organization → API keys** (or **Monitoring → Logs �
 An explicit option wins over the environment variable.
 
 - No key and no secret: logging is **disabled** and every call is a cheap no-op (no timer, no request).
-- Only one of the two, a value that is not `pk_` + 32 lowercase hex / `sk_` + 48 lowercase hex, or a `logsEndpoint` that is not an absolute `http(s)` URL: the constructor throws a `ConfigurationError`, so a typo cannot silently lose every log. (`ConfigurationError` extends `CallistoError`; the transport throws it too when messaging credentials are missing.)
+- `logsEndpoint` must be an absolute `https` URL. Plain `http` is accepted only for a local collector: `localhost`, `127.0.0.1`, `::1` or a `*.localhost` name.
+- Only one of the two, a value that is not `pk_` + 32 lowercase hex / `sk_` + 48 lowercase hex, an endpoint that breaks the rule above, or a secret in a browser: `new CallistoLogger(...)` throws a `ConfigurationError`, so a typo cannot silently lose every log. (`ConfigurationError` extends `CallistoError`; the transport throws it too when messaging credentials are missing.) Error messages never contain the key, the secret or the endpoint.
+- On `CallistoClient`, the same mistakes never stop the client: a bad Logs configuration (options or `CALLISTO_LOGS_*`) must not break SMS or OTP. `client.logs` is then a disabled logger and the client prints one `console.warn` that says why, without the key or the secret. Check `client.logs.isEnabled` if you need to know.
 
 ### Quick start
 
@@ -884,7 +906,7 @@ await client.close(); // also flushes and closes client.logs
 Methods: `debug`, `info`, `warn`, `error`, `fatal` (each `(message, attributes?)`), `log(level, message, attributes?)`, `flush()`, `close()`, plus `isEnabled` and `droppedCount()` for diagnostics.
 
 - `message` is converted to a string (truncated to 32 768 characters).
-- `attributes` is a flat or nested object. Strings, booleans, numbers (integers are sent as OTLP integers, `BigInt` too), `null` (dropped), arrays, `Map`/`Set` and nested objects are supported; a `Date` is sent as its ISO string, anything else is stringified. String values are truncated to 8 192 characters, at most 128 attributes are kept per record, and nesting deeper than 5 levels is stringified.
+- `attributes` is a flat or nested object. Strings, booleans, numbers (integers are sent as OTLP integers, `BigInt` too), `null` (dropped), arrays, `Map`/`Set` and nested objects are supported; a `Date` is sent as its ISO string, anything else is stringified. String values are truncated to 8 192 characters (at every level), at most 128 attributes are kept per record, each nested list, set or map keeps its first 128 elements (the rest is dropped), nesting deeper than 5 levels is stringified as JSON with the same limits, cut at 8 192 characters, and one record encodes at most **2 048** values in total (scalars and containers, across all attributes and levels; an object reused in several places counts each time). Once that budget is spent, containers are cut short and the remaining attributes are dropped.
 
 ### Trace correlation
 

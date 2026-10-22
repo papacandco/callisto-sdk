@@ -1,5 +1,6 @@
 package com.callisto.sdk;
 
+import com.callisto.sdk.errors.ValidationException;
 import com.callisto.sdk.http.Transport;
 import com.callisto.sdk.logs.CallistoLogger;
 import com.callisto.sdk.reporting.ErrorReporter;
@@ -14,6 +15,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.Map;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Entry point for the Callisto SDK.
@@ -90,8 +93,11 @@ public class CallistoClient implements AutoCloseable {
      * and its environment defaults to this client's {@code environment}. Pass {@code null} to
      * configure logs from the environment only. The messaging credentials are never used for logs.
      *
-     * @throws com.callisto.sdk.errors.ValidationException when the Logs key is half set or
-     *                                                     malformed.
+     * <p>Invalid Logs settings (a half-set or malformed key, an endpoint that is not https) never
+     * make this constructor throw: one {@code WARNING} is logged on the
+     * {@code com.callisto.sdk.CallistoClient} java.util.logging logger, without the key or the
+     * secret, and {@link #logs()} is a disabled no-op logger. Missing messaging credentials still
+     * throw.
      */
     public CallistoClient(String clientId, String apiKey, String baseUrl, Duration timeout,
                           HttpClient httpClient, ObjectMapper mapper,
@@ -101,13 +107,28 @@ public class CallistoClient implements AutoCloseable {
                 httpClient, mapper, errorSender, logs);
     }
 
+    private static final Logger WARNINGS = Logger.getLogger(CallistoClient.class.getName());
+
+    /**
+     * Builds the client's logger. A Logs configuration error must never take messaging down: it
+     * becomes one warning (the message names the setting, never its value) and a no-op logger.
+     */
+    private static CallistoLogger buildLogs(CallistoLogger.Builder lb) {
+        try {
+            return lb.build();
+        } catch (ValidationException e) {
+            WARNINGS.log(Level.WARNING, e.getMessage() + " Logs are disabled.");
+            return CallistoLogger.noop();
+        }
+    }
+
     private CallistoClient(Config config, HttpClient httpClient, ObjectMapper mapper,
                            ErrorSender errorSender, CallistoLogger.Builder logsBuilder) {
         CallistoLogger.Builder lb = logsBuilder != null ? logsBuilder : CallistoLogger.builder();
         if (lb.getEnvironment() == null && config.getEnvironment() != null) {
             lb.environment(config.getEnvironment());
         }
-        this.logs = lb.build();
+        this.logs = buildLogs(lb);
 
         ObjectMapper resolvedMapper = mapper != null ? mapper : new ObjectMapper();
         this.transport = httpClient != null
@@ -159,7 +180,8 @@ public class CallistoClient implements AutoCloseable {
 
     /**
      * The log shipper for callisto-logs. Always non-null; a no-op when no Logs key
-     * ({@code CALLISTO_LOGS_ACCESS_KEY} / {@code CALLISTO_LOGS_SECRET}) resolves. Closed by
+     * ({@code CALLISTO_LOGS_ACCESS_KEY} / {@code CALLISTO_LOGS_SECRET}) resolves, or when the
+     * Logs settings are invalid (one warning is logged). Closed by
      * {@link #close()}.
      */
     public CallistoLogger logs() {

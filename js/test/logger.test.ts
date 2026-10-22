@@ -118,10 +118,10 @@ describe("CallistoLogger wire format", () => {
     });
   });
 
-  it("uses version 1.2.0 matching package.json", async () => {
+  it("uses version 1.3.0 matching package.json", async () => {
     const pkg = await import("../package.json", { with: { type: "json" } });
     expect(SDK_VERSION).toBe(pkg.default.version);
-    expect(SDK_VERSION).toBe("1.2.0");
+    expect(SDK_VERSION).toBe("1.3.0");
   });
 
   it("omits the environment, empty attributes and absent trace ids; defaults service.name", async () => {
@@ -492,7 +492,6 @@ describe("CallistoLogger configuration", () => {
   it("throws ConfigurationError for half credentials from the environment", () => {
     process.env.CALLISTO_LOGS_ACCESS_KEY = PK;
     expect(() => new CallistoLogger()).toThrow(ConfigurationError);
-    expect(() => new CallistoClient()).toThrow(ConfigurationError);
   });
 
   it("resolves key, secret, endpoint, service and environment from env vars", async () => {

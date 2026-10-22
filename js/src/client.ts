@@ -1,7 +1,8 @@
 import { resolveConfig, type CallistoOptions } from "./config.js";
 import { Transport } from "./http.js";
 import { ErrorReporter, type Sender } from "./reporter.js";
-import { CallistoLogger, type LogsSender } from "./logger.js";
+import { ConfigurationError } from "./errors.js";
+import { CallistoLogger, disabledLogger, type LogsSender } from "./logger.js";
 import { BalanceResource } from "./resources/balance.js";
 import { SmsResource } from "./resources/sms.js";
 import { OtpResource } from "./resources/otp.js";
@@ -15,6 +16,44 @@ export interface CallistoClientExtras {
   logsSender?: LogsSender;
   /** Inject a clock (epoch ms) for the logger (tests). */
   logsClock?: () => number;
+}
+
+/**
+ * The client's logger, built from the Logs settings only: the messaging
+ * credentials never reach it. A bad Logs configuration (half pair, malformed
+ * key or secret, insecure endpoint, a secret in a browser) must not take down
+ * messaging: the logger is disabled and one console warning is emitted. The
+ * warning carries the configuration error's fixed text, never a key, secret
+ * or endpoint.
+ */
+function buildClientLogger(
+  options: CallistoOptions,
+  fetchImpl: typeof fetch | undefined,
+  extras: CallistoClientExtras,
+): CallistoLogger {
+  try {
+    return new CallistoLogger({
+      logsAccessKey: options.logsAccessKey,
+      logsSecret: options.logsSecret,
+      logsEndpoint: options.logsEndpoint,
+      serviceName: options.serviceName,
+      environment: options.environment,
+      sender: extras.logsSender,
+      fetch: fetchImpl,
+      clock: extras.logsClock,
+    });
+  } catch (err) {
+    const reason =
+      err instanceof ConfigurationError
+        ? err.message.replace(/^Callisto:\s*/, "")
+        : "the Logs configuration is invalid.";
+    try {
+      globalThis.console?.warn?.(`Callisto: log shipping is disabled: ${reason}`);
+    } catch {
+      // a console that throws must not break construction
+    }
+    return disabledLogger();
+  }
 }
 
 export class CallistoClient {
@@ -44,20 +83,11 @@ export class CallistoClient {
         dsn: cfg.errorDsn,
         environment: cfg.environment,
         sender: extras.errorSender,
+        sendSourceContext: cfg.sendSourceContext,
       },
       fetchImpl,
     );
-    // Built from the Logs settings only: the messaging credentials never reach it.
-    this.logs = new CallistoLogger({
-      logsAccessKey: options.logsAccessKey,
-      logsSecret: options.logsSecret,
-      logsEndpoint: options.logsEndpoint,
-      serviceName: options.serviceName,
-      environment: options.environment,
-      sender: extras.logsSender,
-      fetch: fetchImpl,
-      clock: extras.logsClock,
-    });
+    this.logs = buildClientLogger(options, fetchImpl, extras);
     const transport = new Transport(cfg, fetchImpl, this.errorReporter);
     this.balance = new BalanceResource(transport);
     this.sms = new SmsResource(transport);

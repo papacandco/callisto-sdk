@@ -6,6 +6,7 @@ import json
 import os
 import logging
 import threading
+import warnings
 
 import httpx
 import pytest
@@ -117,7 +118,7 @@ def test_golden_payload():
     logger.close()
 
     version = callisto_sdk.__version__
-    assert version == "0.2.0"
+    assert version == "0.3.0"
     expected = {
         "resourceLogs": [{
             "resource": {"attributes": [
@@ -182,7 +183,7 @@ def test_authorization_header_endpoint_and_user_agent():
     expected = base64.b64encode(f"{PK}:{SK}".encode()).decode()
     assert call["headers"]["Authorization"] == f"Basic {expected}"
     assert call["headers"]["Content-Type"] == "application/json"
-    assert call["headers"]["User-Agent"] == "callisto-sdk-python/0.2.0"
+    assert call["headers"]["User-Agent"] == "callisto-sdk-python/0.3.0"
     assert call["timeout"] == 10.0
 
 
@@ -283,6 +284,76 @@ def test_nesting_deeper_than_five_levels_is_stringified():
         assert value["key"] == key
         value = value["value"]
     assert value == {"stringValue": str({"x": 1})}
+
+
+def test_nested_lists_and_maps_are_capped_at_128_items():
+    value = _logs._any_value(
+        {"list": list(range(300)), "map": {f"k{i}": i for i in range(300)}, "small": [1, 2]}
+    )
+    by_key = {kv["key"]: kv["value"] for kv in value["kvlistValue"]["values"]}
+    items = by_key["list"]["arrayValue"]["values"]
+    assert len(items) == 128
+    assert items[-1] == {"intValue": "127"}
+    entries = by_key["map"]["kvlistValue"]["values"]
+    assert len(entries) == 128
+    assert entries[-1]["key"] == "k127"
+    assert len(by_key["small"]["arrayValue"]["values"]) == 2
+    top = _logs._any_value(list(range(500)))
+    assert len(top["arrayValue"]["values"]) == 128
+
+
+def _count_values(any_values):
+    """Number of encoded AnyValues (scalars + containers) in a list of key/values."""
+    total = 0
+    stack = [kv["value"] for kv in any_values]
+    while stack:
+        value = stack.pop()
+        total += 1
+        if "arrayValue" in value:
+            stack.extend(value["arrayValue"]["values"])
+        elif "kvlistValue" in value:
+            stack.extend(kv["value"] for kv in value["kvlistValue"]["values"])
+    return total
+
+
+@pytest.mark.parametrize("levels", [5, 12])
+def test_shared_sub_lists_cannot_explode_the_record(levels):
+    import time
+
+    shared = list(range(128))
+    for _ in range(levels - 1):
+        shared = [shared] * 128  # the same list referenced 128 times, at every level
+    sender = FakeSender()
+    logger = make_logger(sender)
+    started = time.perf_counter()
+    logger.info("bomb", {"a": shared, "b": {"c": shared}, "later": "dropped"})
+    elapsed = time.perf_counter() - started
+    logger.close()
+    attrs = only_record(sender).get("attributes", [])
+    assert elapsed < 0.1
+    assert 0 < _count_values(attrs) <= _logs.MAX_RECORD_VALUES
+    assert "later" not in {kv["key"] for kv in attrs}
+
+
+def test_value_budget_drops_later_attributes():
+    attrs = {f"k{i:02d}": list(range(100)) for i in range(30)}
+    key_values = _logs._key_values(attrs, 1, _logs.MAX_ATTRIBUTES, _logs._Budget())
+    assert _count_values(key_values) == _logs.MAX_RECORD_VALUES
+    # 20 full lists (20 x 101 = 2020 values), then the 21st is cut after 27 values.
+    assert len(key_values) == 21
+    assert len(key_values[-1]["value"]["arrayValue"]["values"]) == 27
+
+
+def test_too_deep_container_is_stringified_within_bounds():
+    huge = list(range(10_000))
+    nested = {"l2": {"l3": {"l4": {"l5": {"l6": huge}}}}}
+    value = _logs._any_value(nested)
+    for _ in range(5):
+        value = value["kvlistValue"]["values"][0]["value"]
+    text = value["stringValue"]
+    assert len(text) == _logs.MAX_ATTR_VALUE_CHARS
+    assert text.endswith("…")
+    assert text.startswith("[0, 1, 2")
 
 
 # -- 4. trace / span ids ------------------------------------------------------------------
@@ -709,9 +780,113 @@ def test_half_credentials_from_env_raise(monkeypatch):
         CallistoLogger()
 
 
-def test_client_with_half_logs_credentials_raises():
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "http://logs.test/v1/logs",
+        "http://logs.callistosignal.com/v1/logs",
+        "http://localhost.evil.test/v1/logs",
+        "http://127.0.0.2/v1/logs",
+        "https:///v1/logs",
+    ],
+)
+def test_standalone_rejects_a_non_https_endpoint(endpoint):
+    with pytest.raises(ValueError, match="https"):
+        CallistoLogger(logs_access_key=PK, logs_secret=SK, logs_endpoint=endpoint, sender=FakeSender())
+
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://logs.test/v1/logs",
+        "HTTPS://logs.test/v1/logs",
+        "http://localhost/v1/logs",
+        "http://localhost:4318/v1/logs",
+        "http://127.0.0.1:4318/v1/logs",
+        "http://[::1]:4318/v1/logs",
+        "http://logs.localhost/v1/logs",
+    ],
+)
+def test_https_and_loopback_http_endpoints_are_accepted(endpoint):
+    sender = FakeSender()
+    logger = CallistoLogger(
+        logs_access_key=PK, logs_secret=SK, logs_endpoint=endpoint, sender=sender, flush_interval=30.0
+    )
+    assert logger.enabled
+    logger.info("hi")
+    logger.close()
+    assert sender.calls[0]["url"] == endpoint
+
+
+def test_standalone_rejects_a_non_https_endpoint_from_env(monkeypatch):
+    monkeypatch.setenv("CALLISTO_LOGS_ACCESS_KEY", PK)
+    monkeypatch.setenv("CALLISTO_LOGS_SECRET", SK)
+    monkeypatch.setenv("CALLISTO_LOGS_ENDPOINT", "http://logs.test/v1/logs")
     with pytest.raises(ValueError):
-        Client(client_id="cid", api_key="key", logs_access_key=PK)
+        CallistoLogger()
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"CALLISTO_LOGS_SECRET": SK},
+        {"CALLISTO_LOGS_ACCESS_KEY": PK},
+        {"CALLISTO_LOGS_ACCESS_KEY": PK, "CALLISTO_LOGS_SECRET": SK[:-1]},
+        {"CALLISTO_LOGS_ACCESS_KEY": SK, "CALLISTO_LOGS_SECRET": PK},
+        {
+            "CALLISTO_LOGS_ACCESS_KEY": PK,
+            "CALLISTO_LOGS_SECRET": SK,
+            "CALLISTO_LOGS_ENDPOINT": "http://logs.test/v1/logs",
+        },
+    ],
+)
+def test_client_with_bad_logs_env_warns_once_and_disables_logs(monkeypatch, env):
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        client = Client(client_id="cid", api_key="key", base_url="https://api.test/v1")
+    assert len(caught) == 1
+    text = str(caught[0].message)
+    assert "Logs are disabled" in text
+    for secret in (PK, SK, SK[:-1]):
+        assert secret not in text
+    assert not client.logs.enabled
+    client.logs.info("dropped silently")
+    client.close()
+
+
+def test_client_with_half_logs_arguments_does_not_raise():
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        client = Client(client_id="cid", api_key="key", logs_access_key=PK)
+    assert len(caught) == 1
+    assert PK not in str(caught[0].message)
+    assert not client.logs.enabled
+    client.close()
+
+
+def test_client_with_valid_logs_settings_does_not_warn():
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        client = Client(
+            client_id="cid",
+            api_key="key",
+            logs_access_key=PK,
+            logs_secret=SK,
+            logs_endpoint="http://localhost:4318/v1/logs",
+        )
+    assert caught == []
+    assert client.logs.enabled
+    client.logs.close()
+    client.close()
+
+
+def test_client_without_messaging_credentials_still_raises(monkeypatch):
+    monkeypatch.delenv("CALLISTO_CLIENT_ID", raising=False)
+    monkeypatch.delenv("CALLISTO_API_KEY", raising=False)
+    with pytest.raises(ValueError):
+        Client(logs_access_key=PK)
 
 
 # -- 11. isolation from messaging credentials ------------------------------------------------------

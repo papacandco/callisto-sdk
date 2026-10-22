@@ -225,6 +225,35 @@ public class ReporterTests
         Assert.Empty(sender.Sent);
     }
 
+    [Theory]
+    [InlineData("http://app.example.com/ingest/abc?key=deadbeef")]
+    [InlineData("http://127.0.0.2/ingest/abc")]
+    [InlineData("ftp://app.example.com/ingest/abc")]
+    public void NonHttpsDsnIsNoOp(string dsn)
+    {
+        var sender = new FakeSender();
+        using var reporter = new ErrorReporter(dsn, sender: sender);
+
+        Assert.False(reporter.Enabled);
+        reporter.CaptureException(new ApiException("boom", 500));
+        reporter.Flush();
+
+        Assert.Empty(sender.Sent);
+    }
+
+    [Theory]
+    [InlineData("https://app.example.com/ingest/abc")]
+    [InlineData("http://localhost:8080/ingest/abc")]
+    [InlineData("http://127.0.0.1/ingest/abc")]
+    [InlineData("http://[::1]/ingest/abc")]
+    [InlineData("http://ingest.localhost/ingest/abc")]
+    public void HttpsAndLoopbackHttpDsnAreEnabled(string dsn)
+    {
+        using var reporter = new ErrorReporter(dsn, sender: new FakeSender());
+        Assert.True(reporter.Enabled);
+        Assert.True(SecureUrl.IsSecure(dsn));
+    }
+
     [Fact]
     public void InvalidDsnIsNoOp()
     {

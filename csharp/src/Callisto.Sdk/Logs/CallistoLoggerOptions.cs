@@ -21,7 +21,8 @@ public sealed class CallistoLoggerOptions
 
     /// <summary>
     /// Full OTLP/HTTP logs POST URL. Env: <c>CALLISTO_LOGS_ENDPOINT</c>. Defaults to
-    /// <see cref="CallistoLogger.DefaultEndpoint"/>.
+    /// <see cref="CallistoLogger.DefaultEndpoint"/>. Must be <c>https</c>; <c>http</c> is accepted
+    /// only for <c>localhost</c>, <c>127.0.0.1</c>, <c>::1</c> and <c>*.localhost</c>.
     /// </summary>
     public string? LogsEndpoint { get; set; }
 
@@ -54,4 +55,7 @@ public sealed class CallistoLoggerOptions
 
     /// <summary>Time between timer-driven sends. Defaults to 5 seconds.</summary>
     internal TimeSpan? FlushInterval { get; set; }
+
+    /// <summary>Builds a disabled no-op logger without reading the key settings.</summary>
+    internal bool Disabled { get; set; }
 }

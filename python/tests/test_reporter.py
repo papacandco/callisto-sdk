@@ -192,6 +192,30 @@ def test_invalid_dsn_is_noop():
     assert sender.calls == []
 
 
+@pytest.mark.parametrize(
+    "dsn",
+    ["http://ingest.callistosignal.com/e/abc", "http://127.0.0.2/e/abc", "ftp://ingest.test/e/abc"],
+)
+def test_non_https_dsn_is_a_silent_noop(dsn):
+    sender = FakeSender()
+    r = ErrorReporter(dsn, sender=sender)
+    assert r.enabled is False
+    r.capture_message("hi")
+    r.flush()
+    r.close()
+    assert sender.calls == []
+
+
+@pytest.mark.parametrize(
+    "dsn",
+    ["https://ingest.test/e/abc", "http://localhost:8080/e/abc", "http://127.0.0.1/e/abc", "http://[::1]/e/abc", "http://ingest.localhost/e/abc"],
+)
+def test_https_and_loopback_http_dsn_are_enabled(dsn):
+    r = ErrorReporter(dsn, sender=FakeSender())
+    assert r.enabled is True
+    r.close()
+
+
 # -- integration through the client / transport -----------------------------
 
 

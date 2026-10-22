@@ -17,7 +17,12 @@ const (
 	maxLogBodyChars      = 32768
 	maxLogAttrValueChars = 8192
 	maxLogAttributes     = 128
-	maxLogAnyValueDepth  = 5
+	maxLogNestedItems    = 128 // per nested list / map; extra items are dropped
+	// maxLogRecordValues is the encoded-value budget of one record: scalars and
+	// containers, at every level and across all attributes. A shared sub-map or
+	// sub-slice counts each time it is visited.
+	maxLogRecordValues  = 2048
+	maxLogAnyValueDepth = 5
 )
 
 // otlpAnyValue is the OTLP JSON AnyValue. Exactly one field is set; all nil
@@ -107,11 +112,12 @@ func buildLogRecord(at time.Time, level LogLevel, message string, attrs map[stri
 		}
 	}
 	sort.Strings(keys)
+	budget := newValueBudget()
 	for _, k := range keys {
-		if len(rec.Attributes) >= maxLogAttributes {
-			break
+		if len(rec.Attributes) >= maxLogAttributes || budget.spent() {
+			break // budget spent: this and every later attribute are dropped
 		}
-		if v, ok := toAnyValue(attrs[k], 1); ok {
+		if v, ok := toAnyValueB(attrs[k], 1, budget); ok {
 			rec.Attributes = append(rec.Attributes, otlpKeyValue{Key: k, Value: v})
 		}
 	}
@@ -195,10 +201,34 @@ func float32AnyValue(f float32) otlpAnyValue {
 	return floatAnyValue(v)
 }
 
-// toAnyValue maps a Go value to an OTLP AnyValue. ok is false for nil (the
-// attribute is omitted). depth is 1 for a top-level attribute value; lists and
-// maps nested deeper than maxLogAnyValueDepth are stringified.
+// valueBudget counts the encoded values left for one record.
+type valueBudget struct{ left int }
+
+func newValueBudget() *valueBudget { return &valueBudget{left: maxLogRecordValues} }
+
+func (b *valueBudget) take() bool {
+	if b.left <= 0 {
+		return false
+	}
+	b.left--
+	return true
+}
+
+func (b *valueBudget) spent() bool { return b.left <= 0 }
+
+// toAnyValue maps a Go value to an OTLP AnyValue with a fresh record budget.
 func toAnyValue(v any, depth int) (otlpAnyValue, bool) {
+	return toAnyValueB(v, depth, newValueBudget())
+}
+
+// toAnyValueB maps a Go value to an OTLP AnyValue. ok is false for nil (the
+// attribute is omitted) and when the record's value budget is spent. depth is 1
+// for a top-level attribute value; lists and maps nested deeper than
+// maxLogAnyValueDepth are stringified (within the same budget).
+func toAnyValueB(v any, depth int, budget *valueBudget) (otlpAnyValue, bool) {
+	if !budget.take() {
+		return otlpAnyValue{}, false
+	}
 	switch x := v.(type) {
 	case nil:
 		return otlpAnyValue{}, false
@@ -277,11 +307,12 @@ func toAnyValue(v any, depth int) (otlpAnyValue, bool) {
 			return otlpAnyValue{}, false
 		}
 		if depth > maxLogAnyValueDepth {
-			return stringAnyValue(stringifyValue(rv.Interface())), true
+			return stringAnyValue(stringifyValue(rv.Interface(), budget)), true
 		}
-		values := make([]otlpAnyValue, 0, rv.Len())
-		for i := 0; i < rv.Len(); i++ {
-			elem, _ := toAnyValue(rv.Index(i).Interface(), depth+1) // null → {}
+		n := min(rv.Len(), maxLogNestedItems)
+		values := make([]otlpAnyValue, 0, n)
+		for i := 0; i < n && !budget.spent(); i++ {
+			elem, _ := toAnyValueB(rv.Index(i).Interface(), depth+1, budget) // null → {}
 			values = append(values, elem)
 		}
 		return otlpAnyValue{ArrayValue: &otlpArrayValue{Values: values}}, true
@@ -290,7 +321,7 @@ func toAnyValue(v any, depth int) (otlpAnyValue, bool) {
 			return otlpAnyValue{}, false
 		}
 		if depth > maxLogAnyValueDepth {
-			return stringAnyValue(stringifyValue(rv.Interface())), true
+			return stringAnyValue(stringifyValue(rv.Interface(), budget)), true
 		}
 		type entry struct {
 			key string
@@ -302,16 +333,19 @@ func toAnyValue(v any, depth int) (otlpAnyValue, bool) {
 			entries = append(entries, entry{key: fmt.Sprint(iter.Key().Interface()), val: iter.Value()})
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].key < entries[j].key })
-		values := make([]otlpKeyValue, 0, len(entries))
+		values := make([]otlpKeyValue, 0, min(len(entries), maxLogNestedItems))
 		for _, e := range entries {
-			if av, ok := toAnyValue(e.val.Interface(), depth+1); ok {
+			if len(values) >= maxLogNestedItems || budget.spent() {
+				break
+			}
+			if av, ok := toAnyValueB(e.val.Interface(), depth+1, budget); ok {
 				values = append(values, otlpKeyValue{Key: e.key, Value: av})
 			}
 		}
 		return otlpAnyValue{KvlistValue: &otlpKvlistValue{Values: values}}, true
 	}
 
-	return stringAnyValue(stringifyValue(v)), true
+	return stringAnyValue(stringifyValue(v, budget)), true
 }
 
 // isNilPointer reports whether v is a typed nil pointer (calling a method on
@@ -321,18 +355,160 @@ func isNilPointer(v any) bool {
 	return rv.Kind() == reflect.Pointer && rv.IsNil()
 }
 
-// stringifyValue renders a value that has no AnyValue mapping. JSON is tried
-// first (it detects cycles); fmt is the fallback for non-JSON-able values.
-func stringifyValue(v any) string {
-	if b, err := json.Marshal(v); err == nil {
-		return string(b)
-	}
+// stringifyValue renders a value that has no AnyValue mapping (or a container
+// nested too deep) as JSON. It walks the value itself instead of calling
+// json.Marshal on it, so the work is bounded: every nested item takes one value
+// from the record budget and the output stops past maxLogAttrValueChars. A
+// shared or cyclic structure therefore cannot explode. A cut ends with "…".
+func stringifyValue(v any, budget *valueBudget) string {
 	rv := reflect.ValueOf(v)
-	if rv.Kind() == reflect.Map || rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
-		// fmt does not detect cycles in containers; never risk unbounded recursion.
-		return fmt.Sprintf("<%T>", v)
+	switch rv.Kind() {
+	case reflect.Complex64, reflect.Complex128, reflect.Func, reflect.Chan, reflect.UnsafePointer:
+		return fmt.Sprintf("%+v", v)
 	}
-	return fmt.Sprintf("%+v", v)
+	w := &boundedJSON{budget: budget, limit: maxLogAttrValueChars}
+	if !w.value(rv, false, 0) && w.cut {
+		w.sb.WriteString("…")
+	}
+	return w.sb.String()
+}
+
+// boundedJSON writes a reflect.Value as JSON (map keys sorted, like
+// encoding/json) within a value budget and a character limit.
+type boundedJSON struct {
+	sb     strings.Builder
+	chars  int
+	limit  int
+	budget *valueBudget
+	cut    bool // stopped because the budget was spent
+}
+
+var (
+	jsonMarshalerType = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+	textMarshalerType = reflect.TypeOf((*interface{ MarshalText() ([]byte, error) })(nil)).Elem()
+)
+
+func (w *boundedJSON) write(s string) bool {
+	if w.chars > w.limit {
+		return false
+	}
+	w.sb.WriteString(s)
+	w.chars += utf8.RuneCountInString(s)
+	return true
+}
+
+func (w *boundedJSON) marshal(rv reflect.Value) bool {
+	if b, err := json.Marshal(rv.Interface()); err == nil {
+		return w.write(string(b))
+	}
+	b, _ := json.Marshal(fmt.Sprintf("%+v", rv.Interface()))
+	return w.write(string(b))
+}
+
+// value writes rv; count is true for a nested item (the root already took its
+// value). It returns false once the output must stop.
+func (w *boundedJSON) value(rv reflect.Value, count bool, depth int) bool {
+	if count && !w.budget.take() {
+		w.cut = true
+		return false
+	}
+	if !rv.IsValid() {
+		return w.write("null")
+	}
+	if depth > 64 {
+		return w.write(`"…"`)
+	}
+	if rv.Kind() == reflect.Pointer || rv.Kind() == reflect.Interface || rv.Kind() == reflect.Map || rv.Kind() == reflect.Slice {
+		if rv.IsNil() {
+			return w.write("null")
+		}
+	}
+	if rv.CanInterface() && (rv.Type().Implements(jsonMarshalerType) || rv.Type().Implements(textMarshalerType)) {
+		return w.marshal(rv)
+	}
+	switch rv.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		return w.value(rv.Elem(), false, depth+1)
+	case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64, reflect.String:
+		if !rv.CanInterface() {
+			return w.write("null")
+		}
+		return w.marshal(rv)
+	case reflect.Slice, reflect.Array:
+		if rv.Kind() == reflect.Slice && rv.Type().Elem().Kind() == reflect.Uint8 && rv.CanInterface() {
+			return w.marshal(rv) // []byte → base64, like encoding/json
+		}
+		if !w.write("[") {
+			return false
+		}
+		for i := 0; i < rv.Len(); i++ {
+			if i > 0 && !w.write(",") {
+				return false
+			}
+			if !w.value(rv.Index(i), true, depth+1) {
+				return false
+			}
+		}
+		return w.write("]")
+	case reflect.Map:
+		keys := rv.MapKeys()
+		names := make([]string, len(keys))
+		order := make([]int, len(keys))
+		for i, k := range keys {
+			names[i] = fmt.Sprint(k.Interface())
+			order[i] = i
+		}
+		sort.Slice(order, func(i, j int) bool { return names[order[i]] < names[order[j]] })
+		if !w.write("{") {
+			return false
+		}
+		for n, i := range order {
+			if n > 0 && !w.write(",") {
+				return false
+			}
+			key, _ := json.Marshal(names[i])
+			if !w.write(string(key)+":") || !w.value(rv.MapIndex(keys[i]), true, depth+1) {
+				return false
+			}
+		}
+		return w.write("}")
+	case reflect.Struct:
+		if !w.write("{") {
+			return false
+		}
+		first := true
+		t := rv.Type()
+		for i := 0; i < t.NumField(); i++ {
+			f := t.Field(i)
+			if !f.IsExported() {
+				continue
+			}
+			name := f.Name
+			if tag, ok := f.Tag.Lookup("json"); ok {
+				tagName, _, _ := strings.Cut(tag, ",")
+				if tagName == "-" {
+					continue
+				}
+				if tagName != "" {
+					name = tagName
+				}
+			}
+			if !first && !w.write(",") {
+				return false
+			}
+			first = false
+			key, _ := json.Marshal(name)
+			if !w.write(string(key)+":") || !w.value(rv.Field(i), true, depth+1) {
+				return false
+			}
+		}
+		return w.write("}")
+	default:
+		b, _ := json.Marshal(fmt.Sprintf("<%s>", rv.Type()))
+		return w.write(string(b))
+	}
 }
 
 // logEnvelope holds the encoded parts of a request body around the records:

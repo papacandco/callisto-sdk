@@ -25,6 +25,34 @@ internal static class OtlpEncoder
     public const int MaxBodyChars = 32_768;
     public const int MaxStringChars = 8_192;
     public const int MaxAttributes = 128;
+
+    /// <summary>Items kept per nested list / map; the extra ones are dropped.</summary>
+    public const int MaxNestedItems = 128;
+
+    /// <summary>
+    /// Encoded values (scalars + containers) per record, across all attributes and nesting
+    /// levels. A sub-list or sub-map referenced several times counts each time it is visited.
+    /// </summary>
+    public const int MaxRecordValues = 2048;
+
+    /// <summary>The encoded values left for one record.</summary>
+    internal sealed class Budget
+    {
+        private int _left = MaxRecordValues;
+
+        public bool Spent => _left <= 0;
+
+        public bool Take()
+        {
+            if (_left <= 0)
+            {
+                return false;
+            }
+
+            _left--;
+            return true;
+        }
+    }
     public const int MaxDepth = 5;
     private const string Ellipsis = "…";
 
@@ -159,13 +187,20 @@ internal static class OtlpEncoder
 
             if (kept.Count > 0)
             {
+                // Once the record's value budget is spent, later attributes are dropped.
+                var budget = new Budget();
                 w.WriteStartArray("attributes");
                 foreach (var kvp in kept)
                 {
+                    if (!budget.Take())
+                    {
+                        break;
+                    }
+
                     w.WriteStartObject();
                     w.WriteString("key", Clean(kvp.Key ?? string.Empty));
                     w.WritePropertyName("value");
-                    WriteAnyValue(w, kvp.Value, 1);
+                    WriteAnyValue(w, kvp.Value, 1, budget);
                     w.WriteEndObject();
                 }
 
@@ -230,8 +265,11 @@ internal static class OtlpEncoder
         return true;
     }
 
-    /// <summary>Writes one OTLP <c>AnyValue</c> object. <paramref name="depth"/> starts at 1.</summary>
-    private static void WriteAnyValue(Utf8JsonWriter w, object? value, int depth)
+    /// <summary>
+    /// Writes one OTLP <c>AnyValue</c> object. <paramref name="depth"/> starts at 1. The caller
+    /// has already taken this value from <paramref name="budget"/>.
+    /// </summary>
+    private static void WriteAnyValue(Utf8JsonWriter w, object? value, int depth, Budget budget)
     {
         w.WriteStartObject();
         switch (value)
@@ -282,16 +320,25 @@ internal static class OtlpEncoder
             case IDictionary dict:
                 if (depth > MaxDepth)
                 {
-                    w.WriteString("stringValue", Stringify(value));
+                    w.WriteString("stringValue", BoundedJson.Of(value, budget));
                     break;
                 }
 
                 w.WritePropertyName("kvlistValue");
                 w.WriteStartObject();
                 w.WriteStartArray("values");
+                var kept = 0;
                 foreach (DictionaryEntry entry in dict)
                 {
-                    WriteKeyValue(w, Convert.ToString(entry.Key, CultureInfo.InvariantCulture), entry.Value, depth);
+                    if (kept >= MaxNestedItems || budget.Spent)
+                    {
+                        break;
+                    }
+
+                    if (WriteKeyValue(w, Convert.ToString(entry.Key, CultureInfo.InvariantCulture), entry.Value, depth, budget))
+                    {
+                        kept++;
+                    }
                 }
 
                 w.WriteEndArray();
@@ -300,16 +347,25 @@ internal static class OtlpEncoder
             case IEnumerable<KeyValuePair<string, object?>> pairs:
                 if (depth > MaxDepth)
                 {
-                    w.WriteString("stringValue", Stringify(value));
+                    w.WriteString("stringValue", BoundedJson.Of(value, budget));
                     break;
                 }
 
                 w.WritePropertyName("kvlistValue");
                 w.WriteStartObject();
                 w.WriteStartArray("values");
+                var keptPairs = 0;
                 foreach (var kvp in pairs)
                 {
-                    WriteKeyValue(w, kvp.Key, kvp.Value, depth);
+                    if (keptPairs >= MaxNestedItems || budget.Spent)
+                    {
+                        break;
+                    }
+
+                    if (WriteKeyValue(w, kvp.Key, kvp.Value, depth, budget))
+                    {
+                        keptPairs++;
+                    }
                 }
 
                 w.WriteEndArray();
@@ -318,16 +374,22 @@ internal static class OtlpEncoder
             case IEnumerable list:
                 if (depth > MaxDepth)
                 {
-                    w.WriteString("stringValue", Stringify(value));
+                    w.WriteString("stringValue", BoundedJson.Of(value, budget));
                     break;
                 }
 
                 w.WritePropertyName("arrayValue");
                 w.WriteStartObject();
                 w.WriteStartArray("values");
+                var items = 0;
                 foreach (var item in list)
                 {
-                    WriteAnyValue(w, item, depth + 1);
+                    if (items++ >= MaxNestedItems || !budget.Take())
+                    {
+                        break;
+                    }
+
+                    WriteAnyValue(w, item, depth + 1, budget);
                 }
 
                 w.WriteEndArray();
@@ -341,18 +403,23 @@ internal static class OtlpEncoder
         w.WriteEndObject();
     }
 
-    private static void WriteKeyValue(Utf8JsonWriter w, string? key, object? value, int depth)
+    /// <summary>
+    /// Writes one key/value; returns false (and writes nothing) for a null value or once the
+    /// budget is spent.
+    /// </summary>
+    private static bool WriteKeyValue(Utf8JsonWriter w, string? key, object? value, int depth, Budget budget)
     {
-        if (value is null)
+        if (value is null || !budget.Take())
         {
-            return;
+            return false;
         }
 
         w.WriteStartObject();
         w.WriteString("key", Clean(key ?? string.Empty));
         w.WritePropertyName("value");
-        WriteAnyValue(w, value, depth + 1);
+        WriteAnyValue(w, value, depth + 1, budget);
         w.WriteEndObject();
+        return true;
     }
 
     private static void WriteDouble(Utf8JsonWriter w, double d)
@@ -375,15 +442,154 @@ internal static class OtlpEncoder
         }
     }
 
-    private static string Stringify(object value)
+    /// <summary>
+    /// JSON of a container nested too deep, written by hand instead of with
+    /// <see cref="JsonSerializer"/>: every nested item takes one value from the record budget and
+    /// the output stops past <see cref="MaxStringChars"/>, so a shared or cyclic structure costs
+    /// a bounded amount of work. A cut ends with "…".
+    /// </summary>
+    private sealed class BoundedJson
     {
-        try
+        private readonly StringBuilder _sb = new();
+        private readonly Budget _budget;
+        private readonly HashSet<object> _active = new(ReferenceEqualityComparer.Instance);
+        private bool _cut;
+
+        private BoundedJson(Budget budget)
         {
-            return Clip(JsonSerializer.Serialize(value, value.GetType(), StringifyOptions), MaxStringChars);
+            _budget = budget;
         }
-        catch
+
+        public static string Of(object value, Budget budget)
         {
-            return Clip(SafeToString(value), MaxStringChars);
+            var w = new BoundedJson(budget);
+            if (!w.Value(value, count: false) && w._cut)
+            {
+                w._sb.Append('…');
+            }
+
+            return Clip(w._sb.ToString(), MaxStringChars);
+        }
+
+        private bool Write(string s)
+        {
+            if (_sb.Length > MaxStringChars)
+            {
+                return false;
+            }
+
+            _sb.Append(s);
+            return true;
+        }
+
+        private static string Json(object? value)
+        {
+            try
+            {
+                return value is null ? "null" : JsonSerializer.Serialize(value, value.GetType(), StringifyOptions);
+            }
+            catch
+            {
+                return JsonSerializer.Serialize(value is null ? "null" : SafeToString(value), StringifyOptions);
+            }
+        }
+
+        private bool Value(object? value, bool count)
+        {
+            if (count && !_budget.Take())
+            {
+                _cut = true;
+                return false;
+            }
+
+            if (value is null or string or bool or char or Enum or DateTime or DateTimeOffset ||
+                value.GetType().IsPrimitive || value is decimal ||
+                value is not (IDictionary or IEnumerable<KeyValuePair<string, object?>> or IEnumerable))
+            {
+                return Write(Json(value));
+            }
+
+            if (!_active.Add(value) || _active.Count > 64)
+            {
+                _active.Remove(value);
+                return Write(value is IEnumerable and not (IDictionary or IEnumerable<KeyValuePair<string, object?>>) ? "[\"…\"]" : "{}");
+            }
+
+            try
+            {
+                switch (value)
+                {
+                    case IDictionary dict:
+                    {
+                        if (!Write("{"))
+                        {
+                            return false;
+                        }
+
+                        var first = true;
+                        foreach (DictionaryEntry entry in dict)
+                        {
+                            if ((!first && !Write(",")) ||
+                                !Write(Json(Convert.ToString(entry.Key, CultureInfo.InvariantCulture) ?? string.Empty) + ":") ||
+                                !Value(entry.Value, count: true))
+                            {
+                                return false;
+                            }
+
+                            first = false;
+                        }
+
+                        return Write("}");
+                    }
+
+                    case IEnumerable<KeyValuePair<string, object?>> pairs:
+                    {
+                        if (!Write("{"))
+                        {
+                            return false;
+                        }
+
+                        var first = true;
+                        foreach (var kvp in pairs)
+                        {
+                            if ((!first && !Write(",")) || !Write(Json(kvp.Key ?? string.Empty) + ":") ||
+                                !Value(kvp.Value, count: true))
+                            {
+                                return false;
+                            }
+
+                            first = false;
+                        }
+
+                        return Write("}");
+                    }
+
+                    default:
+                    {
+                        if (!Write("["))
+                        {
+                            return false;
+                        }
+
+                        var first = true;
+                        foreach (var item in (IEnumerable)value)
+                        {
+                            if ((!first && !Write(",")) || !Value(item, count: true))
+                            {
+                                return false;
+                            }
+
+                            first = false;
+                        }
+
+                        return Write("]");
+                    }
+                }
+            }
+            finally
+            {
+                _active.Remove(value);
+            }
         }
     }
 

@@ -32,6 +32,8 @@ MAX_BATCH_BYTES = 1_000_000
 MAX_BODY_CHARS = 32_768
 MAX_ATTR_VALUE_CHARS = 8_192
 MAX_ATTRIBUTES = 128
+MAX_NESTED_ITEMS = 128  # per nested list / map; extra items are dropped
+MAX_RECORD_VALUES = 2048  # encoded values (scalars + containers) per record, all levels
 MAX_DEPTH = 5
 
 FLUSH_INTERVAL = 5.0
@@ -83,9 +85,99 @@ def _safe_str(value: Any) -> str:
             return "<unprintable>"
 
 
-def _any_value(value: Any, depth: int = 1) -> Optional[dict]:
-    """Map a Python value to an OTLP ``AnyValue``; ``None`` for a null value."""
+class _Budget:
+    """Encoded values left for one record. A reused sub-list / sub-dict counts each
+    time it is visited, so shared references cannot multiply the work."""
+
+    __slots__ = ("left",)
+
+    def __init__(self, left: int = MAX_RECORD_VALUES) -> None:
+        self.left = left
+
+    def take(self) -> bool:
+        if self.left <= 0:
+            return False
+        self.left -= 1
+        return True
+
+
+class _StringFull(Exception):
+    pass
+
+
+def _bounded_str(
+    value: Any, limit: int = MAX_ATTR_VALUE_CHARS, budget: Optional[_Budget] = None
+) -> str:
+    """``str()`` of a container, built piece by piece. It stops once past ``limit``
+    characters, or when the record's value budget is spent (every nested item takes
+    one value), so a huge, shared or self-referencing structure costs a bounded amount
+    of work. Matches ``str()`` for plain dicts, lists and tuples; a cut ends with ``…``."""
+    parts: List[str] = []
+    size = 0
+    active: set = set()
+    budget = budget or _Budget()
+
+    def emit(text: str) -> None:
+        nonlocal size
+        if size > limit:
+            raise _StringFull
+        parts.append(text)
+        size += len(text)
+
+    def walk(item: Any, root: bool = False) -> None:
+        if not root and not budget.take():
+            raise _StringFull
+        if isinstance(item, (Mapping, list, tuple)):
+            if id(item) in active or len(active) >= 64:
+                emit("{...}" if isinstance(item, Mapping) else "[...]")
+                return
+            active.add(id(item))
+            try:
+                if isinstance(item, Mapping):
+                    emit("{")
+                    for index, (key, val) in enumerate(item.items()):
+                        if index:
+                            emit(", ")
+                        walk(key)
+                        emit(": ")
+                        walk(val)
+                    emit("}")
+                else:
+                    opening, closing = ("[", "]") if isinstance(item, list) else ("(", ")")
+                    emit(opening)
+                    for index, val in enumerate(item):
+                        if index:
+                            emit(", ")
+                        walk(val)
+                    if isinstance(item, tuple) and len(item) == 1:
+                        emit(",")
+                    emit(closing)
+            finally:
+                active.discard(id(item))
+            return
+        try:
+            emit(repr(item))
+        except _StringFull:
+            raise
+        except Exception:
+            emit("<unprintable>")
+
+    try:
+        walk(value, root=True)
+    except _StringFull:
+        text = "".join(parts)
+        return _truncate(text, limit) if len(text) > limit else text + _ELLIPSIS
+    return "".join(parts)
+
+
+def _any_value(value: Any, depth: int = 1, budget: Optional[_Budget] = None) -> Optional[dict]:
+    """Map a Python value to an OTLP ``AnyValue``. ``None`` for a null value, or when the
+    record's value budget is spent (the value is dropped)."""
     if value is None:
+        return None
+    if budget is None:
+        budget = _Budget()
+    if not budget.take():
         return None
     if isinstance(value, bool):
         return {"boolValue": value}
@@ -103,26 +195,45 @@ def _any_value(value: Any, depth: int = 1) -> Optional[dict]:
         return {"stringValue": _truncate(value, MAX_ATTR_VALUE_CHARS)}
     if isinstance(value, (list, tuple, Mapping)):
         if depth > MAX_DEPTH:
-            return {"stringValue": _truncate(_safe_str(value), MAX_ATTR_VALUE_CHARS)}
+            return {"stringValue": _truncate(_bounded_str(value, budget=budget), MAX_ATTR_VALUE_CHARS)}
         if isinstance(value, Mapping):
-            return {"kvlistValue": {"values": _key_values(value, depth + 1)}}
-        values = []
+            return {
+                "kvlistValue": {
+                    "values": _key_values(value, depth + 1, MAX_NESTED_ITEMS, budget)
+                }
+            }
+        values: List[dict] = []
         for item in value:
-            mapped = _any_value(item, depth + 1)
-            values.append(mapped if mapped is not None else {})
+            if len(values) >= MAX_NESTED_ITEMS:
+                break
+            if item is None:
+                if not budget.take():
+                    break
+                values.append({})
+                continue
+            mapped = _any_value(item, depth + 1, budget)
+            if mapped is None:
+                break  # budget spent
+            values.append(mapped)
         return {"arrayValue": {"values": values}}
     return {"stringValue": _truncate(_safe_str(value), MAX_ATTR_VALUE_CHARS)}
 
 
-def _key_values(mapping: Mapping, depth: int, limit: Optional[int] = None) -> List[dict]:
+def _key_values(
+    mapping: Mapping, depth: int, limit: Optional[int] = None, budget: Optional[_Budget] = None
+) -> List[dict]:
+    if budget is None:
+        budget = _Budget()
     out: List[dict] = []
     for key, raw in mapping.items():
-        mapped = _any_value(raw, depth)
-        if mapped is None:
+        if raw is None:
             continue
-        out.append({"key": _safe_str(key), "value": mapped})
         if limit is not None and len(out) >= limit:
             break
+        mapped = _any_value(raw, depth, budget)
+        if mapped is None:
+            break  # budget spent: this and every later value are dropped
+        out.append({"key": _safe_str(key), "value": mapped})
     return out
 
 
@@ -218,8 +329,10 @@ class CallistoLogger:
     (``CALLISTO_LOGS_ACCESS_KEY``, ``CALLISTO_LOGS_SECRET``,
     ``CALLISTO_LOGS_ENDPOINT``, ``CALLISTO_SERVICE_NAME`` / ``OTEL_SERVICE_NAME``,
     ``CALLISTO_ENVIRONMENT``). With no key and no secret the logger is a cheap
-    no-op that starts no thread. Half or malformed credentials raise
-    ``ValueError`` at construction.
+    no-op that starts no thread. Half or malformed credentials, or an endpoint
+    that is not ``https`` (``http`` only on a loopback host), raise
+    ``ValueError`` at construction. (The messaging :class:`~callisto_sdk.Client`
+    does not raise: it warns once and keeps a disabled logger.)
 
     A log call never raises and never waits for the network. ``sender``,
     ``clock``, ``sleep``, ``monotonic`` and ``flush_interval`` are hooks for tests.
@@ -243,8 +356,9 @@ class CallistoLogger:
         sleep: Optional[Callable[[float], None]] = None,
         monotonic: Optional[Callable[[], float]] = None,
         flush_interval: float = FLUSH_INTERVAL,
+        _config: Optional[LogsConfig] = None,
     ) -> None:
-        self._config: LogsConfig = resolve_logs_config(
+        self._config: LogsConfig = _config or resolve_logs_config(
             logs_access_key, logs_secret, logs_endpoint, service_name, environment
         )
         self._version = _sdk_version()
@@ -459,7 +573,7 @@ class CallistoLogger:
         span_id = _valid_id(attrs.get("span_id"), _SPAN_ID_RE)
         if span_id is not None:
             del attrs["span_id"]
-        key_values = _key_values(attrs, 1, MAX_ATTRIBUTES)
+        key_values = _key_values(attrs, 1, MAX_ATTRIBUTES, _Budget())
         if key_values:
             record["attributes"] = key_values
         if trace_id is not None:

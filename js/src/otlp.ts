@@ -36,6 +36,21 @@ export interface OtlpLogRecord {
 export const MAX_BODY_CHARS = 32_768;
 export const MAX_ATTRIBUTE_VALUE_CHARS = 8_192;
 export const MAX_ATTRIBUTES = 128;
+/** At most this many elements per nested list or map (the extra ones are dropped). */
+export const MAX_NESTED_ELEMENTS = 128;
+/**
+ * At most this many encoded values (scalars and containers, every level, every
+ * attribute) per log record. A sub-object reused in several places counts each
+ * time it is visited, so a tiny object that references the same big list at
+ * several levels cannot blow up a record. Once spent, the remaining values are
+ * dropped: containers are cut short and later attributes are left out.
+ */
+export const MAX_RECORD_VALUES = 2_048;
+
+/** The values still allowed in the record being encoded. */
+export interface ValueBudget {
+  left: number;
+}
 /** Containers nested deeper than this are stringified. */
 export const MAX_DEPTH = 5;
 
@@ -83,14 +98,92 @@ export function safeString(value: unknown): string {
   }
 }
 
+const CIRCULAR = "[Circular]";
+
+/**
+ * A JSON-ready copy of `value` with the same caps as the AnyValue mapping:
+ * at most MAX_NESTED_ELEMENTS per list/map, strings cut at
+ * MAX_ATTRIBUTE_VALUE_CHARS, and a shared character budget so the copy (and
+ * the JSON.stringify after it) stays about one attribute value long, however
+ * large or deep the input is. Mirrors JSON.stringify otherwise: undefined,
+ * functions and symbols are dropped from objects and become null in lists.
+ */
+function prune(value: unknown, budget: { left: number }, ancestors: Set<object>): unknown {
+  budget.left -= 1;
+  switch (typeof value) {
+    case "string": {
+      const cut = truncate(value, MAX_ATTRIBUTE_VALUE_CHARS);
+      budget.left -= cut.length;
+      return cut;
+    }
+    case "bigint":
+      return value.toString();
+    case "object":
+      break;
+    default:
+      return value;
+  }
+  if (value === null) return null;
+  const obj = value as object;
+  if (ancestors.has(obj)) return CIRCULAR;
+
+  const toJSON = (obj as { toJSON?: unknown }).toJSON;
+  if (typeof toJSON === "function" && !(obj instanceof Map) && !(obj instanceof Set)) {
+    const replaced: unknown = toJSON.call(obj);
+    if (replaced !== obj) return prune(replaced, budget, ancestors);
+  }
+
+  ancestors.add(obj);
+  try {
+    if (Array.isArray(obj) || obj instanceof Set) {
+      const out: unknown[] = [];
+      for (const item of obj as Iterable<unknown>) {
+        if (out.length >= MAX_NESTED_ELEMENTS || budget.left <= 0) break;
+        const pruned = prune(item, budget, ancestors);
+        out.push(
+          pruned === undefined || typeof pruned === "function" || typeof pruned === "symbol"
+            ? null
+            : pruned,
+        );
+      }
+      return out;
+    }
+    const out: Record<string, unknown> = {};
+    let count = 0;
+    const add = (key: unknown, item: unknown): boolean => {
+      if (count >= MAX_NESTED_ELEMENTS || budget.left <= 0) return false;
+      const pruned = prune(item, budget, ancestors);
+      if (pruned === undefined || typeof pruned === "function" || typeof pruned === "symbol") {
+        return true;
+      }
+      const name = safeString(key);
+      budget.left -= name.length;
+      out[name] = pruned;
+      count++;
+      return true;
+    };
+    if (obj instanceof Map) {
+      for (const [key, item] of obj) if (!add(key, item)) break;
+    } else {
+      for (const key in obj) {
+        if (!Object.prototype.hasOwnProperty.call(obj, key)) continue;
+        if (!add(key, (obj as Record<string, unknown>)[key])) break;
+      }
+    }
+    return out;
+  } finally {
+    ancestors.delete(obj);
+  }
+}
+
+/** Bounded JSON text of a value nested past MAX_DEPTH. */
 function stringify(value: unknown): string {
   try {
-    const json = JSON.stringify(value, (_k, v: unknown) =>
-      typeof v === "bigint" ? v.toString() : v,
-    );
+    const budget = { left: MAX_ATTRIBUTE_VALUE_CHARS };
+    const json = JSON.stringify(prune(value, budget, new Set()));
     if (typeof json === "string") return json;
   } catch {
-    // circular or hostile: fall through
+    // hostile getters or toJSON: fall through
   }
   return safeString(value);
 }
@@ -102,10 +195,17 @@ function stringValue(value: string): AnyValue {
 /**
  * Map a JS value to an OTLP AnyValue. Returns undefined for null/undefined
  * (the caller omits the attribute, or writes `{}` for a list element).
- * `depth` is 1 for a top-level attribute value.
+ * `depth` is 1 for a top-level attribute value. `budget` is shared by the
+ * whole record (MAX_RECORD_VALUES); undefined is returned once it is spent.
  */
-export function toAnyValue(value: unknown, depth = 1): AnyValue | undefined {
+export function toAnyValue(
+  value: unknown,
+  depth = 1,
+  budget: ValueBudget = { left: MAX_RECORD_VALUES },
+): AnyValue | undefined {
   if (value === null || value === undefined) return undefined;
+  if (budget.left <= 0) return undefined;
+  budget.left -= 1;
   switch (typeof value) {
     case "string":
       return stringValue(value);
@@ -134,27 +234,44 @@ export function toAnyValue(value: unknown, depth = 1): AnyValue | undefined {
     return stringValue(`${value.name}: ${value.message}`);
   }
   if (depth > MAX_DEPTH) {
-    return stringValue(value instanceof Map ? stringify(Object.fromEntries(value)) : stringify(value));
+    return stringValue(stringify(value));
   }
   if (Array.isArray(value) || value instanceof Set) {
     const values: AnyValue[] = [];
-    for (const item of value) values.push(toAnyValue(item, depth + 1) ?? {});
+    for (const item of value) {
+      if (values.length >= MAX_NESTED_ELEMENTS || budget.left <= 0) break;
+      const encoded = toAnyValue(item, depth + 1, budget);
+      if (encoded === undefined) budget.left -= 1; // a null element is sent as {}
+      values.push(encoded ?? {});
+    }
     return { arrayValue: { values } };
   }
   const entries: Iterable<[unknown, unknown]> =
-    value instanceof Map ? value.entries() : Object.entries(value as object);
-  return { kvlistValue: { values: toKeyValues(entries, depth + 1, Infinity) } };
+    value instanceof Map ? value.entries() : ownEntries(value as object);
+  return {
+    kvlistValue: { values: toKeyValues(entries, depth + 1, MAX_NESTED_ELEMENTS, budget) },
+  };
+}
+
+/** Own enumerable string-keyed entries, lazily (a huge object is not copied). */
+function* ownEntries(obj: object): Generator<[string, unknown]> {
+  for (const key in obj) {
+    if (Object.prototype.hasOwnProperty.call(obj, key)) {
+      yield [key, (obj as Record<string, unknown>)[key]];
+    }
+  }
 }
 
 function toKeyValues(
   entries: Iterable<[unknown, unknown]>,
   depth: number,
   limit: number,
+  budget: ValueBudget,
 ): KeyValue[] {
   const out: KeyValue[] = [];
   for (const [key, raw] of entries) {
-    if (out.length >= limit) break;
-    const encoded = toAnyValue(raw, depth);
+    if (out.length >= limit || budget.left <= 0) break;
+    const encoded = toAnyValue(raw, depth, budget);
     if (encoded !== undefined) out.push({ key: safeString(key), value: encoded });
   }
   return out;
@@ -202,7 +319,7 @@ export function buildLogRecord(
       else if (key === "trace_id") traceId = id;
       else spanId = id;
     }
-    const encoded = toKeyValues(rest, 1, MAX_ATTRIBUTES);
+    const encoded = toKeyValues(rest, 1, MAX_ATTRIBUTES, { left: MAX_RECORD_VALUES });
     if (encoded.length > 0) record.attributes = encoded;
     if (traceId) record.traceId = traceId;
     if (spanId) record.spanId = spanId;

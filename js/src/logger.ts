@@ -134,10 +134,27 @@ function trackOpen(logger: CallistoLogger): void {
   beforeExitInstalled = true;
 }
 
+let buildingDisabled = false;
+
 /**
- * Ships log lines to callisto-logs as OTLP/HTTP JSON. Records are queued in
- * memory and sent in the background (every 5 s, or as soon as 100 are
- * queued). A log call never throws and never waits on the network.
+ * A no-op logger that reads no option and no environment variable. Used by
+ * CallistoClient when the Logs configuration is invalid. Not exported from
+ * the package entry point.
+ */
+export function disabledLogger(): CallistoLogger {
+  buildingDisabled = true;
+  try {
+    return new CallistoLogger();
+  } finally {
+    buildingDisabled = false;
+  }
+}
+
+/**
+ * Ships log lines to callisto-logs as OTLP/HTTP JSON. Server only: a Logs
+ * secret is refused in a browser (it would be public in the bundle). Records
+ * are queued in memory and sent in the background (every 5 s, or as soon as
+ * 100 are queued). A log call never throws and never waits on the network.
  *
  * Built with no Logs key and no secret, the logger is a no-op.
  */
@@ -160,9 +177,15 @@ export class CallistoLogger {
   private stopped = false;
   private closing: Promise<void> | null = null;
 
-  /** @throws ConfigurationError on half or malformed credentials, or a bad endpoint. */
+  /**
+   * @throws ConfigurationError on half or malformed credentials, an endpoint
+   * that is not https (http only for localhost), or a Logs secret configured
+   * in a browser.
+   */
   constructor(options: CallistoLoggerOptions = {}) {
-    const cfg = resolveLogsConfig(options);
+    const cfg = buildingDisabled
+      ? { enabled: false as const, accessKey: undefined, secret: undefined }
+      : resolveLogsConfig(options);
     this.enabled = cfg.enabled;
     this.sender = options.sender ?? fetchSender(options.fetch);
     this.clock = options.clock ?? Date.now;

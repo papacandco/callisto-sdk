@@ -86,3 +86,33 @@ func TestErrorReporterRecoverReportsAndRepanics(t *testing.T) {
 		t.Errorf("message = %v, want kaboom", payload["message"])
 	}
 }
+
+// TestErrorDSNHTTPSRule: an https DSN (or http on a loopback host) enables
+// reporting; any other DSN leaves it silently disabled.
+func TestErrorDSNHTTPSRule(t *testing.T) {
+	for dsn, want := range map[string]bool{
+		"https://ingest.example/e/abc":         true,
+		"http://localhost:8080/e/abc":          true,
+		"http://127.0.0.1/e/abc":               true,
+		"http://[::1]/e/abc":                   true,
+		"http://ingest.localhost/e/abc":        true,
+		"http://ingest.callistosignal.com/e/a": false,
+		"http://127.0.0.2/e/abc":               false,
+		"ftp://ingest.example/e/abc":           false,
+		"not-a-url":                            false,
+	} {
+		sender := &fakeSender{}
+		r := NewErrorReporter(ReporterOptions{DSN: dsn, Sender: sender})
+		if r.Enabled() != want {
+			t.Errorf("DSN %q: enabled = %v, want %v", dsn, r.Enabled(), want)
+		}
+		if !want {
+			r.CaptureMessage("y", "info", nil)
+			r.Flush()
+			if sender.count() != 0 {
+				t.Errorf("DSN %q: sender called %d times, want 0", dsn, sender.count())
+			}
+		}
+		r.Close()
+	}
+}

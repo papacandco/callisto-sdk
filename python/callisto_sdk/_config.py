@@ -85,12 +85,31 @@ class LogsConfig:
         return self.access_key is not None and self.secret is not None
 
 
-def _is_http_url(value: str) -> bool:
+_LOOPBACK_HOSTS = ("localhost", "127.0.0.1", "::1")
+
+
+def is_secure_url(value: object) -> bool:
+    """True for an absolute ``https`` URL, or an ``http`` URL on a loopback host.
+
+    Secrets (the Logs ``sk_``, the error DSN) must never travel in clear text, so
+    ``http`` is accepted only for ``localhost``, ``127.0.0.1``, ``::1`` and
+    ``*.localhost`` (local development).
+    """
+    if not isinstance(value, str):
+        return False
     try:
         parts = urlsplit(value)
+        host = parts.hostname
     except ValueError:
         return False
-    return parts.scheme in ("http", "https") and bool(parts.netloc)
+    if not parts.netloc or not host:
+        return False
+    scheme = parts.scheme.lower()
+    if scheme == "https":
+        return True
+    if scheme == "http":
+        return host in _LOOPBACK_HOSTS or host.endswith(".localhost")
+    return False
 
 
 def resolve_logs_config(
@@ -103,8 +122,10 @@ def resolve_logs_config(
     """Resolve the logs settings: explicit argument first, then environment.
 
     Both key and secret absent -> disabled config (no error). Exactly one of them,
-    a malformed value, or a non-http(s) endpoint -> ``ValueError`` (the SDK's
-    configuration error), so a typo never silently loses every log.
+    a malformed value, or an endpoint that is not ``https`` (``http`` only on a
+    loopback host) -> ``ValueError`` (the SDK's configuration error), so a typo
+    never silently loses every log. The messages never contain the key or the
+    secret.
     """
     access_key = logs_access_key or os.environ.get("CALLISTO_LOGS_ACCESS_KEY") or None
     secret = logs_secret or os.environ.get("CALLISTO_LOGS_SECRET") or None
@@ -133,7 +154,10 @@ def resolve_logs_config(
         raise ValueError(
             "Callisto: logs_secret is malformed (expected 'sk_' followed by 48 lowercase hex characters)."
         )
-    if not isinstance(endpoint, str) or not _is_http_url(endpoint):
-        raise ValueError("Callisto: logs_endpoint must be an absolute http(s) URL.")
+    if not is_secure_url(endpoint):
+        raise ValueError(
+            "Callisto: logs_endpoint must be an absolute https URL "
+            "(http is accepted only for localhost, 127.0.0.1, ::1 and *.localhost)."
+        )
 
     return LogsConfig(access_key, secret, endpoint, service_name, environment)

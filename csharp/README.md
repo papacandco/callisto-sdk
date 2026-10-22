@@ -804,7 +804,7 @@ well-formed-URL check). A missing or malformed DSN leaves reporting disabled.
 
 | Variable | Maps to | Default | Meaning |
 | --- | --- | --- | --- |
-| `CALLISTO_APP_ERROR_DSN` | `errorDsn` | none | Ingest DSN. Absent → reporting fully disabled (no-op). |
+| `CALLISTO_APP_ERROR_DSN` | `errorDsn` | none | Ingest DSN. Must be `https` (`http` only for `localhost`, `127.0.0.1`, `::1`, `*.localhost`). Absent or invalid → reporting fully disabled (no-op). |
 | `CALLISTO_CAPTURE_UNHANDLED` | `captureUnhandled` | `false` | Install the global unhandled-exception handler. |
 | `CALLISTO_ENVIRONMENT` | `environment` | none | Optional tag included in `context.environment`. |
 
@@ -887,10 +887,18 @@ Each setting is optional and falls back to an environment variable.
 
 - No key and no secret: the logger is **disabled**. Every call is a cheap no-op, no background task
   is started, nothing is sent.
-- Only one of the two, or a value that is not `pk_` + 32 lowercase hex / `sk_` + 48 lowercase hex:
-  the constructor throws `ArgumentException` (the same error as missing messaging credentials). A
-  typo fails at startup instead of silently losing every log.
-- `LogsEndpoint` must be an absolute `http(s)` URL (`ArgumentException` otherwise).
+- **HTTPS only.** `LogsEndpoint` must be an absolute `https` URL: the secret travels in the
+  `Authorization` header. Plain `http` is accepted only for `localhost`, `127.0.0.1`, `::1` and
+  `*.localhost` (local development). The error DSN follows the same rule.
+- Invalid settings are: only one of the two, a value that is not `pk_` + 32 lowercase hex /
+  `sk_` + 48 lowercase hex, or an endpoint that breaks the HTTPS rule. What happens then depends on
+  who builds the logger:
+  - **`new CallistoLogger(...)` (standalone)** throws `ArgumentException` (the same error as
+    missing messaging credentials). A typo fails at startup instead of silently losing every log.
+  - **`new CallistoClient(...)`** never throws because of the Logs settings. It writes **one**
+    warning through `System.Diagnostics.Trace.TraceWarning` (add a `TraceListener` to see it), and
+    `Logs` is a disabled no-op logger; SMS, OTP and WhatsApp keep working. The warning never
+    contains the key or the secret. Missing messaging credentials still throw `ArgumentException`.
 
 ### Quick start
 
@@ -932,7 +940,8 @@ using var callisto = new CallistoClient(
 callisto.Logs.Error("payment failed", new Dictionary<string, object?> { ["order_id"] = 42 });
 ```
 
-Without a Logs key, `callisto.Logs` is a no-op logger. `callisto.Dispose()` also closes the logger
+Without a Logs key, or with invalid Logs settings (one warning, see above), `callisto.Logs` is a
+no-op logger. `callisto.Dispose()` also closes the logger
 (flushing what is queued). The messaging credentials are never sent to callisto-logs, and the Logs
 secret is never sent anywhere else.
 
@@ -949,7 +958,8 @@ long lost = logger.DroppedCount;    // diagnostics
 
 `attributes` is an `IReadOnlyDictionary<string, object?>`. Values may be `string`, `bool`, any
 integer type, `float` / `double` / `decimal`, `null` (dropped), lists (any `IEnumerable`) and
-maps (any `IDictionary`), nested up to 5 levels. Other values are converted to strings.
+maps (any `IDictionary`), nested up to 5 levels (deeper containers are written as a JSON string).
+Other values are converted to strings.
 
 | Level | `severityNumber` | `severityText` |
 | --- | --- | --- |
@@ -992,8 +1002,11 @@ An invalid value stays an ordinary attribute.
 - `DroppedCount` counts every lost record: full queue, pause, or a dropped batch.
 - `Flush` / `FlushAsync` / `Dispose` / `DisposeAsync` wait at most `FlushTimeout` (5 s) and never
   throw. HTTP timeout is 10 s per request.
-- Guards: the message is cut to 32 768 characters, string values to 8 192 (marked with `…`), and
-  at most 128 attributes are kept per record.
+- Guards: the message is cut to 32 768 characters, string values to 8 192 (marked with `…`), at
+  most 128 attributes are kept per record, and at most 128 items per nested list or map. A record
+  encodes at most 2 048 values in total (scalars and containers, at every level; a list or map
+  referenced several times counts each time): once that budget is spent, the remaining values and
+  attributes are dropped.
 - The logger's own failures are swallowed: they are never logged, never sent to the error
   reporter, and never re-shipped.
 - There is no `Microsoft.Extensions.Logging` adapter in this version (it would add a package

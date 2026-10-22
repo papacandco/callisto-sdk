@@ -795,7 +795,7 @@ Delivery is **background, best-effort, and isolated**: it never delays or alters
 
 ### Enabling
 
-Pass the DSN to the constructor, or set `CALLISTO_APP_ERROR_DSN`. The DSN is the full ingest URL:
+Pass the DSN to the constructor, or set `CALLISTO_APP_ERROR_DSN`. The DSN is the full ingest URL. It must be `https` (plain `http` only for `localhost`, `127.0.0.1`, `::1` and `*.localhost`); any other DSN leaves error reporting off:
 
 ```python
 from callisto_sdk import Client
@@ -880,7 +880,10 @@ In the dashboard, open **Organization → API keys** (or **Monitoring → Logs �
 An explicit argument wins over the environment variable.
 
 - No key and no secret: logs are **disabled**. Every call is a cheap no-op and no thread is started.
-- Only one of the two, a malformed value, or an endpoint that is not an absolute `http(s)` URL: the constructor raises `ValueError` (the same error as missing messaging credentials), so a typo never silently loses every log.
+- **HTTPS only.** `logs_endpoint` must be an absolute `https` URL: the secret travels in the `Authorization` header. Plain `http` is accepted only for `localhost`, `127.0.0.1`, `::1` and `*.localhost` (local development). The error DSN follows the same rule; a DSN that breaks it leaves error reporting off, as an absent DSN does.
+- Invalid settings are: only one of the two, a malformed value, or an endpoint that breaks the HTTPS rule. What happens then depends on who builds the logger:
+  - **`CallistoLogger` (standalone):** the constructor raises `ValueError` (the same error as missing messaging credentials), so a typo never silently loses every log.
+  - **`Client`:** it never raises because of the logs settings. It emits **one** `RuntimeWarning` (through `warnings.warn`), and `client.logs` is a disabled no-op logger; SMS, OTP and WhatsApp keep working. The warning never contains the key or the secret. Missing messaging credentials still raise `ValueError`, as before.
 
 ### Quick start
 
@@ -918,9 +921,9 @@ with Client(
     callisto.logs.info("sms sent", {"to_country": "CI"})
 ```
 
-When no Logs key resolves, `client.logs` is a no-op logger.
+When no Logs key resolves, or the logs settings are invalid (one warning, see above), `client.logs` is a no-op logger.
 
-`message` is converted to a string. Attribute values can be `str`, `bool`, `int`, `float`, `None`, lists and dicts (nested); `None` values are dropped and any other type is stringified. Limits: the body is cut at 32 768 characters and string values at 8 192 (marked with a trailing `…`), at most 128 attributes per record, and nesting deeper than 5 levels is stringified.
+`message` is converted to a string. Attribute values can be `str`, `bool`, `int`, `float`, `None`, lists and dicts (nested); `None` values are dropped and any other type is stringified. Limits: the body is cut at 32 768 characters and string values at 8 192 (marked with a trailing `…`), at most 128 attributes per record, at most 128 items in each nested list or dict (the extra ones are dropped), and nesting deeper than 5 levels is stringified. A record encodes at most 2 048 values in total (scalars and containers, at every level; a list or dict referenced several times counts each time): once that budget is spent, the remaining values and attributes are dropped.
 
 ### Trace correlation
 

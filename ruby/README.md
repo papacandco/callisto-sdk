@@ -799,7 +799,7 @@ callisto = Callisto::Client.new(
 
 | Variable | Maps to | Default | Meaning |
 | --- | --- | --- | --- |
-| `CALLISTO_APP_ERROR_DSN` | `error_dsn` | none | Ingest DSN. Absent → reporting fully disabled. |
+| `CALLISTO_APP_ERROR_DSN` | `error_dsn` | none | Ingest DSN. Must be `https` (`http` only for `localhost`, `127.0.0.1`, `::1`, `*.localhost`). Absent or invalid → reporting fully disabled. |
 | `CALLISTO_CAPTURE_UNHANDLED` | `capture_unhandled` | `false` | Install the global unhandled-exception handler. |
 | `CALLISTO_ENVIRONMENT` | `environment` | none | Optional tag included in `context.environment`. |
 
@@ -866,8 +866,17 @@ Every setting is optional and falls back to an environment variable. Keyword arg
 | `flush_timeout` | — | `5.0` | bound, in seconds, of `flush` and `close` |
 
 - No key and no secret: logs are **disabled**. Every call is a cheap no-op and no thread starts.
-- Only one of the two, a malformed value, or an endpoint that is not an absolute `http(s)` URL:
-  the constructor raises `Callisto::ValidationError`, so a typo never silently loses every log.
+- **HTTPS only.** `logs_endpoint` must be an absolute `https` URL: the secret travels in the
+  `Authorization` header. Plain `http` is accepted only for `localhost`, `127.0.0.1`, `::1` and
+  `*.localhost` (local development). The error DSN follows the same rule.
+- Invalid settings are: only one of the two, a malformed value, or an endpoint that breaks the
+  HTTPS rule. What happens then depends on who builds the logger:
+  - **`Callisto::Logger.new` (standalone)** raises `Callisto::ValidationError`, so a typo never
+    silently loses every log.
+  - **`Callisto::Client.new`** never raises because of the Logs settings. It prints **one** warning
+    with `Kernel#warn` (to `$stderr`), and `client.logs` is a disabled no-op logger; SMS, OTP and
+    WhatsApp keep working. The warning never contains the key or the secret. Missing messaging
+    credentials still raise `Callisto::ValidationError`.
 
 ### Logs quick start
 
@@ -892,7 +901,8 @@ logger.close # flushes what is queued (bounded to 5 s); also done at process exi
 ```
 
 On the messaging client, the same logger is `client.logs`, built from the keywords passed to
-`Callisto::Client.new` (and the env vars). Without a Logs key, `client.logs` is a no-op logger.
+`Callisto::Client.new` (and the env vars). Without a Logs key, or with invalid Logs settings (one
+warning, see above), `client.logs` is a no-op logger.
 `client.close` (and the block form) also closes it.
 
 ```ruby
@@ -909,7 +919,8 @@ end
 Methods: `debug`, `info`, `warn`, `error`, `fatal` (each `(message, attributes = {})`),
 `log(level, message, attributes = {})`, `flush`, `close`, `dropped_count`, `enabled?`.
 `message` is converted with `to_s`. Attribute values can be strings, symbols, booleans, integers,
-floats, `nil` (dropped), arrays and hashes (nested up to 5 levels); anything else is stringified.
+floats, `nil` (dropped), arrays and hashes (nested up to 5 levels; deeper containers are written as
+a JSON string); anything else is stringified.
 `Callisto::Logger` is not a drop-in for Ruby's standard `::Logger`; there is no Rails or stdlib
 adapter in this version.
 
@@ -945,7 +956,10 @@ logger.error("payment failed", { order_id: 42, trace_id: trace_id, span_id: span
   no pause, a zero dropped count and its own worker thread, started lazily. A logger built
   before the fork keeps working in every worker; nothing to configure.
 - The body is cut at 32 768 characters and string attribute values at 8 192 (marked with `…`); a
-  record keeps at most 128 attributes.
+  record keeps at most 128 attributes, and at most 128 items per nested array or hash. A record
+  encodes at most 2 048 values in total (scalars and containers, at every level; an array or hash
+  referenced several times counts each time): once that budget is spent, the remaining values and
+  attributes are dropped.
 - The logger has its own HTTP path: it never sends your messaging credentials, and its own
   failures are swallowed (never reported to the error reporter, never logged through itself).
 

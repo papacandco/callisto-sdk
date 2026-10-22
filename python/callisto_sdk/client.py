@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import sys
 import threading
+import warnings
 from typing import Optional
 
 import httpx
 
-from ._config import resolve_config
+from ._config import (
+    DEFAULT_LOGS_ENDPOINT,
+    DEFAULT_SERVICE_NAME,
+    LogsConfig,
+    resolve_config,
+    resolve_logs_config,
+)
 from ._http import Transport
 from ._logs import CallistoLogger
 from ._reporter import ErrorReporter
@@ -15,6 +22,29 @@ from .resources.sms import SmsResource
 from .resources.otp import OtpResource
 from .resources.whatsapp import WhatsAppResource
 from .resources.notify import NotifyResource
+
+
+def _client_logger(
+    logs_access_key: Optional[str],
+    logs_secret: Optional[str],
+    logs_endpoint: Optional[str],
+    service_name: Optional[str],
+    environment: Optional[str],
+) -> CallistoLogger:
+    """The client's logger. An invalid logs configuration (half pair, malformed
+    ``pk_``/``sk_``, non-https endpoint) emits ONE ``RuntimeWarning`` and yields a
+    disabled logger instead of raising, so logs can never take messaging down.
+    The warning text never contains the key or the secret."""
+    try:
+        config = resolve_logs_config(
+            logs_access_key, logs_secret, logs_endpoint, service_name, environment
+        )
+    except ValueError as exc:
+        warnings.warn(f"{exc} Logs are disabled.", RuntimeWarning, stacklevel=3)
+        config = LogsConfig(
+            None, None, DEFAULT_LOGS_ENDPOINT, DEFAULT_SERVICE_NAME, environment
+        )
+    return CallistoLogger(_config=config)
 
 
 class Client:
@@ -45,13 +75,9 @@ class Client:
             environment=environment,
         )
         # Logs use their own key and HTTP path, never the messaging credentials.
-        # Built before the transport so a logs configuration error leaks nothing.
-        self.logs = logs or CallistoLogger(
-            logs_access_key=logs_access_key,
-            logs_secret=logs_secret,
-            logs_endpoint=logs_endpoint,
-            service_name=service_name,
-            environment=cfg.environment,
+        # A bad logs setting never breaks messaging: one warning, then a no-op logger.
+        self.logs = logs or _client_logger(
+            logs_access_key, logs_secret, logs_endpoint, service_name, cfg.environment
         )
         self.error_reporter = reporter or ErrorReporter(
             cfg.error_dsn, environment=cfg.environment

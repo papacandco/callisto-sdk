@@ -922,11 +922,175 @@ public class LogsTests
         }));
     }
 
-    [Fact]
-    public void ClientWithMalformedLogsKeyFailsFast()
+    [Theory]
+    [InlineData("http://logs.example.test/v1/logs")]
+    [InlineData("http://logs.callistosignal.com/v1/logs")]
+    [InlineData("http://localhost.evil.test/v1/logs")]
+    [InlineData("http://127.0.0.2/v1/logs")]
+    [InlineData("/v1/logs")]
+    public void StandaloneRejectsANonHttpsEndpoint(string endpoint)
     {
-        Assert.Throws<ArgumentException>(() => new CallistoClient(
-            "cid", "key", logsAccessKey: Pk, logsSecret: "sk_nope", logSender: new FakeLogSender()));
+        var ex = Assert.Throws<ArgumentException>(() => new CallistoLogger(new CallistoLoggerOptions
+        {
+            LogsAccessKey = Pk,
+            LogsSecret = Sk,
+            LogsEndpoint = endpoint,
+            Sender = new FakeLogSender(),
+        }));
+        Assert.Contains("https", ex.Message);
+        Assert.DoesNotContain(Sk, ex.Message);
+    }
+
+    [Theory]
+    [InlineData("https://logs.example.test/v1/logs")]
+    [InlineData("HTTPS://logs.example.test/v1/logs")]
+    [InlineData("http://localhost/v1/logs")]
+    [InlineData("http://localhost:4318/v1/logs")]
+    [InlineData("http://127.0.0.1:4318/v1/logs")]
+    [InlineData("http://[::1]:4318/v1/logs")]
+    [InlineData("http://logs.localhost/v1/logs")]
+    public void HttpsAndLoopbackHttpEndpointsAreAccepted(string endpoint)
+    {
+        var sender = new FakeLogSender();
+        using (var logger = new CallistoLogger(new CallistoLoggerOptions
+        {
+            LogsAccessKey = Pk,
+            LogsSecret = Sk,
+            LogsEndpoint = endpoint,
+            Sender = sender,
+        }))
+        {
+            Assert.True(logger.Enabled);
+            logger.Info("hi");
+            logger.Flush();
+        }
+
+        Assert.Equal(endpoint, Assert.Single(sender.Requests).Endpoint);
+    }
+
+    [Fact]
+    public void ClientWithMalformedLogsKeyDoesNotThrow()
+    {
+        using var client = new CallistoClient(
+            "cid", "key", handler: new FakeHandler(), logsAccessKey: Pk, logsSecret: "sk_nope",
+            logSender: new FakeLogSender());
+        Assert.False(client.Logs.Enabled);
+        client.Logs.Info("dropped");
+    }
+
+    [Fact]
+    public void ClientWithoutMessagingCredentialsStillThrows()
+    {
+        if (System.Environment.GetEnvironmentVariable("CALLISTO_CLIENT_ID") is not null)
+        {
+            return;
+        }
+
+        Assert.Throws<ArgumentException>(() => new CallistoClient(logsAccessKey: Pk, logsSecret: Sk));
+    }
+
+    private static int CountValues(JsonNode anyValue)
+    {
+        var n = 1;
+        if (anyValue["arrayValue"] is { } array)
+        {
+            n += array["values"]!.AsArray().Sum(v => CountValues(v!));
+        }
+        else if (anyValue["kvlistValue"] is { } kvlist)
+        {
+            n += kvlist["values"]!.AsArray().Sum(kv => CountValues(kv!["value"]!));
+        }
+
+        return n;
+    }
+
+    private static JsonArray EncodeAttributes(Dictionary<string, object?> attributes)
+        => JsonNode.Parse(OtlpEncoder.Record(CallistoLogLevel.Info, "m", attributes, FixedTime))!["attributes"]!.AsArray();
+
+    [Fact]
+    public void NestedContainersAreCappedAt128Items()
+    {
+        var map = Enumerable.Range(0, 300).ToDictionary(i => $"k{i:D3}", i => (object?)i);
+        var attrs = EncodeAttributes(new Dictionary<string, object?>
+        {
+            ["list"] = Enumerable.Range(0, 300).ToList(),
+            ["map"] = map,
+            ["small"] = new[] { 1, 2 },
+        });
+        JsonNode Get(string key) => attrs.First(a => (string?)a!["key"] == key)!["value"]!;
+
+        var list = Get("list")["arrayValue"]!["values"]!.AsArray();
+        Assert.Equal(OtlpEncoder.MaxNestedItems, list.Count);
+        Assert.Equal("127", (string?)list[127]!["intValue"]);
+        var entries = Get("map")["kvlistValue"]!["values"]!.AsArray();
+        Assert.Equal(OtlpEncoder.MaxNestedItems, entries.Count);
+        Assert.Equal("k127", (string?)entries[127]!["key"]);
+        Assert.Equal(2, Get("small")["arrayValue"]!["values"]!.AsArray().Count);
+    }
+
+    [Theory]
+    [InlineData(5)]
+    [InlineData(12)]
+    public void SharedSubListsCannotExplodeTheRecord(int levels)
+    {
+        object shared = Enumerable.Range(0, 128).Cast<object?>().ToList();
+        for (var i = 1; i < levels; i++)
+        {
+            shared = Enumerable.Repeat<object?>(shared, 128).ToList(); // the same list, 128 times
+        }
+
+        var attributes = new Dictionary<string, object?>
+        {
+            ["a"] = shared,
+            ["b"] = new Dictionary<string, object?> { ["c"] = shared },
+            ["later"] = "dropped",
+        };
+        OtlpEncoder.Record(CallistoLogLevel.Info, "warm-up", new Dictionary<string, object?> { ["x"] = new[] { 1 } }, FixedTime);
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var attrs = EncodeAttributes(attributes);
+        watch.Stop();
+
+        Assert.True(watch.ElapsedMilliseconds < 100, $"{levels} levels took {watch.ElapsedMilliseconds} ms");
+        Assert.DoesNotContain(attrs, a => (string?)a!["key"] == "later");
+        var total = attrs.Sum(a => CountValues(a!["value"]!));
+        Assert.InRange(total, 1, OtlpEncoder.MaxRecordValues);
+    }
+
+    [Fact]
+    public void ValueBudgetDropsLaterAttributes()
+    {
+        var attributes = new Dictionary<string, object?>();
+        for (var i = 0; i < 30; i++)
+        {
+            attributes[$"k{i:D2}"] = new int[100];
+        }
+
+        var attrs = EncodeAttributes(attributes);
+        Assert.Equal(OtlpEncoder.MaxRecordValues, attrs.Sum(a => CountValues(a!["value"]!)));
+        // 20 full arrays (20 x 101 = 2020 values), then the 21st is cut after 27 items.
+        Assert.Equal(21, attrs.Count);
+        Assert.Equal(27, attrs[20]!["value"]!["arrayValue"]!["values"]!.AsArray().Count);
+    }
+
+    [Fact]
+    public void TooDeepContainerIsStringifiedWithinBounds()
+    {
+        object deep = new Dictionary<string, object?> { ["l6"] = Enumerable.Repeat(0, 10_000).ToList() };
+        for (var i = 0; i < 4; i++)
+        {
+            deep = new Dictionary<string, object?> { ["n"] = deep };
+        }
+
+        var value = EncodeAttributes(new Dictionary<string, object?> { ["deep"] = deep })[0]!["value"]!;
+        for (var i = 0; i < OtlpEncoder.MaxDepth; i++)
+        {
+            value = value["kvlistValue"]!["values"]![0]!["value"]!;
+        }
+
+        var text = (string)value["stringValue"]!;
+        Assert.True(text.Length <= OtlpEncoder.MaxStringChars, $"length {text.Length}");
+        Assert.StartsWith("[0,0,0", text);
+        Assert.EndsWith("…", text);
     }
 
     // 11. Isolation -----------------------------------------------------------------------------
@@ -1108,12 +1272,147 @@ public class LogsEnvTests
     }
 
     [Fact]
-    public void HalfCredentialsFromEnvironmentFailFast()
+    public void HalfCredentialsFromEnvironmentFailFastForTheStandaloneLogger()
     {
         WithEnv(new Dictionary<string, string?> { ["CALLISTO_LOGS_ACCESS_KEY"] = LogsTests.Pk }, () =>
         {
             Assert.Throws<ArgumentException>(() => new CallistoLogger());
-            Assert.Throws<ArgumentException>(() => new CallistoClient("cid", "key", handler: new FakeHandler()));
+        });
+    }
+
+    [Fact]
+    public void HttpEndpointFromEnvironmentFailsFastForTheStandaloneLogger()
+    {
+        WithEnv(new Dictionary<string, string?>
+        {
+            ["CALLISTO_LOGS_ACCESS_KEY"] = LogsTests.Pk,
+            ["CALLISTO_LOGS_SECRET"] = LogsTests.Sk,
+            ["CALLISTO_LOGS_ENDPOINT"] = "http://logs.example.test/v1/logs",
+        }, () =>
+        {
+            Assert.Throws<ArgumentException>(() => new CallistoLogger());
+        });
+    }
+
+    /// <summary>Records <see cref="System.Diagnostics.Trace"/> warnings.</summary>
+    private sealed class WarningListener : System.Diagnostics.TraceListener
+    {
+        public List<string> Warnings { get; } = new();
+
+        public override void Write(string? message)
+        {
+        }
+
+        public override void WriteLine(string? message)
+        {
+        }
+
+        public override void TraceEvent(System.Diagnostics.TraceEventCache? eventCache, string source,
+            System.Diagnostics.TraceEventType eventType, int id, string? message)
+        {
+            if (eventType == System.Diagnostics.TraceEventType.Warning)
+            {
+                lock (Warnings)
+                {
+                    Warnings.Add(message ?? string.Empty);
+                }
+            }
+        }
+
+        public override void TraceEvent(System.Diagnostics.TraceEventCache? eventCache, string source,
+            System.Diagnostics.TraceEventType eventType, int id, string? format, params object?[]? args)
+            => TraceEvent(eventCache, source, eventType, id, args is null ? format : string.Format(format ?? string.Empty, args));
+    }
+
+    private static List<string> CaptureWarnings(Action body)
+    {
+        var listener = new WarningListener();
+        System.Diagnostics.Trace.Listeners.Add(listener);
+        try
+        {
+            body();
+        }
+        finally
+        {
+            System.Diagnostics.Trace.Listeners.Remove(listener);
+        }
+
+        return listener.Warnings;
+    }
+
+    public static IEnumerable<object[]> BadLogsEnvironments() => new[]
+    {
+        new object[] { new Dictionary<string, string?> { ["CALLISTO_LOGS_SECRET"] = LogsTests.Sk } },
+        new object[] { new Dictionary<string, string?> { ["CALLISTO_LOGS_ACCESS_KEY"] = LogsTests.Pk } },
+        new object[]
+        {
+            new Dictionary<string, string?>
+            {
+                ["CALLISTO_LOGS_ACCESS_KEY"] = LogsTests.Pk,
+                ["CALLISTO_LOGS_SECRET"] = LogsTests.Sk[..40],
+            },
+        },
+        new object[]
+        {
+            new Dictionary<string, string?>
+            {
+                ["CALLISTO_LOGS_ACCESS_KEY"] = LogsTests.Sk,
+                ["CALLISTO_LOGS_SECRET"] = LogsTests.Pk,
+            },
+        },
+        new object[]
+        {
+            new Dictionary<string, string?>
+            {
+                ["CALLISTO_LOGS_ACCESS_KEY"] = LogsTests.Pk,
+                ["CALLISTO_LOGS_SECRET"] = LogsTests.Sk,
+                ["CALLISTO_LOGS_ENDPOINT"] = "http://logs.example.test/v1/logs",
+            },
+        },
+    };
+
+    [Theory]
+    [MemberData(nameof(BadLogsEnvironments))]
+    public void ClientWithBadLogsEnvironmentWarnsOnceAndDisablesLogs(Dictionary<string, string?> env)
+    {
+        WithEnv(env, () =>
+        {
+            CallistoClient? client = null;
+            var warnings = CaptureWarnings(() => client = new CallistoClient("cid", "key", handler: new FakeHandler()));
+            using (client)
+            {
+                Assert.NotNull(client);
+                Assert.False(client!.Logs.Enabled);
+                client.Logs.Info("dropped");
+            }
+
+            var warning = Assert.Single(warnings);
+            Assert.Contains("Logs are disabled", warning);
+            Assert.DoesNotContain(LogsTests.Pk, warning);
+            Assert.DoesNotContain(LogsTests.Sk, warning);
+            Assert.DoesNotContain(LogsTests.Sk[..40], warning);
+        });
+    }
+
+    [Fact]
+    public void ClientWithValidLogsEnvironmentDoesNotWarn()
+    {
+        WithEnv(new Dictionary<string, string?>
+        {
+            ["CALLISTO_LOGS_ACCESS_KEY"] = LogsTests.Pk,
+            ["CALLISTO_LOGS_SECRET"] = LogsTests.Sk,
+            ["CALLISTO_LOGS_ENDPOINT"] = "http://localhost:4318/v1/logs",
+        }, () =>
+        {
+            CallistoClient? client = null;
+            var warnings = CaptureWarnings(() =>
+                client = new CallistoClient("cid", "key", handler: new FakeHandler(), logSender: new FakeLogSender()));
+            using (client)
+            {
+                Assert.True(client!.Logs.Enabled);
+            }
+
+            Assert.Empty(warnings);
         });
     }
 }

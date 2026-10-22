@@ -176,8 +176,8 @@ module Callisto
     def valid_dsn(dsn)
       return nil if dsn.nil? || (dsn.is_a?(String) && dsn.strip.empty?)
 
-      uri = URI.parse(dsn)
-      return nil unless uri.is_a?(URI::HTTP) && !uri.host.to_s.empty?
+      # https only (http on a loopback host); any other DSN leaves the reporter a silent no-op.
+      return nil unless Logger.secure_url?(dsn)
 
       dsn
     rescue StandardError

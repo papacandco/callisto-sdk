@@ -196,6 +196,32 @@ class ReporterTest {
     }
 
     @Test
+    void nonHttpsDsnIsANoOp() {
+        for (String dsn : new String[]{
+                "http://app.callistosignal.com/ingest/uuid?key=abc", "http://127.0.0.2/ingest/uuid",
+                "ftp://app.callistosignal.com/ingest/uuid"}) {
+            FakeSender sender = new FakeSender();
+            ErrorReporter reporter = new ErrorReporter(dsn, null, sender, TestSupport.MAPPER);
+            assertFalse(reporter.isEnabled(), dsn);
+            reporter.captureMessage("hello", "info", null);
+            reporter.flush();
+            reporter.close();
+            assertEquals(0, sender.calls.get(), dsn);
+        }
+    }
+
+    @Test
+    void httpsAndLoopbackHttpDsnAreEnabled() {
+        for (String dsn : new String[]{
+                DSN, "http://localhost:8080/ingest/uuid", "http://127.0.0.1/ingest/uuid",
+                "http://[::1]/ingest/uuid", "http://ingest.localhost/ingest/uuid"}) {
+            ErrorReporter reporter = new ErrorReporter(dsn, null, new FakeSender(), TestSupport.MAPPER);
+            assertTrue(reporter.isEnabled(), dsn);
+            reporter.close();
+        }
+    }
+
+    @Test
     void publicCaptureMessageWorks() {
         FakeSender sender = new FakeSender();
         StubHttpClient stub = new StubHttpClient(200, "{}");

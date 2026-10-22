@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -907,6 +908,11 @@ func TestLogsConfigurationErrors(t *testing.T) {
 		{name: "relative endpoint", cfg: LoggerConfig{AccessKey: testLogsPK, Secret: testLogsSK, Endpoint: "/v1/logs"}},
 		{name: "ftp endpoint", cfg: LoggerConfig{AccessKey: testLogsPK, Secret: testLogsSK, Endpoint: "ftp://logs.example/v1/logs"}},
 		{name: "bad endpoint from env", cfg: LoggerConfig{AccessKey: testLogsPK, Secret: testLogsSK}, env: map[string]string{"CALLISTO_LOGS_ENDPOINT": "logs.example"}},
+		{name: "http endpoint", cfg: LoggerConfig{AccessKey: testLogsPK, Secret: testLogsSK, Endpoint: "http://logs.example/v1/logs"}},
+		{name: "http endpoint from env", cfg: LoggerConfig{AccessKey: testLogsPK, Secret: testLogsSK}, env: map[string]string{"CALLISTO_LOGS_ENDPOINT": "http://logs.callistosignal.com/v1/logs"}},
+		{name: "http lookalike localhost", cfg: LoggerConfig{AccessKey: testLogsPK, Secret: testLogsSK, Endpoint: "http://localhost.evil.example/v1/logs"}},
+		{name: "http non-loopback ip", cfg: LoggerConfig{AccessKey: testLogsPK, Secret: testLogsSK, Endpoint: "http://127.0.0.2/v1/logs"}},
+		{name: "https without host", cfg: LoggerConfig{AccessKey: testLogsPK, Secret: testLogsSK, Endpoint: "https:///v1/logs"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -963,11 +969,155 @@ func TestClientLogsNoopWithoutKey(t *testing.T) {
 	c.Logs.Info("no-op", nil)
 }
 
-func TestClientLogsConfigurationError(t *testing.T) {
+func TestLogsEndpointHTTPSRuleAccepts(t *testing.T) {
+	for _, endpoint := range []string{
+		"https://logs.example/v1/logs",
+		"HTTPS://logs.example/v1/logs",
+		"http://localhost/v1/logs",
+		"http://localhost:4318/v1/logs",
+		"http://LOCALHOST:4318/v1/logs",
+		"http://127.0.0.1:4318/v1/logs",
+		"http://[::1]:4318/v1/logs",
+		"http://logs.localhost/v1/logs",
+	} {
+		t.Run(endpoint, func(t *testing.T) {
+			clearLogsEnv(t)
+			l, err := NewLogger(LoggerConfig{AccessKey: testLogsPK, Secret: testLogsSK, Endpoint: endpoint, Sender: newFakeLogSender()})
+			if err != nil {
+				t.Fatalf("endpoint %q rejected: %v", endpoint, err)
+			}
+			defer l.Close(context.Background())
+			if !l.Enabled() {
+				t.Error("logger should be enabled")
+			}
+		})
+	}
+}
+
+// captureStdLog redirects the standard logger (the channel NewClient warns on)
+// for the duration of the test.
+func captureStdLog(t *testing.T) *strings.Builder {
+	t.Helper()
+	buf := &strings.Builder{}
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(buf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(prevOut)
+		log.SetFlags(prevFlags)
+	})
+	return buf
+}
+
+func TestClientWithBadLogsSettingsWarnsOnceAndDisablesLogs(t *testing.T) {
+	cases := []struct {
+		name string
+		opts Options
+		env  map[string]string
+	}{
+		{name: "only secret from env", env: map[string]string{"CALLISTO_LOGS_SECRET": testLogsSK}},
+		{name: "only access key from env", env: map[string]string{"CALLISTO_LOGS_ACCESS_KEY": testLogsPK}},
+		{name: "malformed secret from env", env: map[string]string{"CALLISTO_LOGS_ACCESS_KEY": testLogsPK, "CALLISTO_LOGS_SECRET": testLogsSK[:40]}},
+		{name: "swapped pair from env", env: map[string]string{"CALLISTO_LOGS_ACCESS_KEY": testLogsSK, "CALLISTO_LOGS_SECRET": testLogsPK}},
+		{name: "http endpoint from env", env: map[string]string{
+			"CALLISTO_LOGS_ACCESS_KEY": testLogsPK, "CALLISTO_LOGS_SECRET": testLogsSK,
+			"CALLISTO_LOGS_ENDPOINT": "http://logs.example/v1/logs",
+		}},
+		{name: "half pair as options", opts: Options{LogsAccessKey: testLogsPK}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clearLogsEnv(t)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			buf := captureStdLog(t)
+			opts := tc.opts
+			opts.ClientID, opts.APIKey = "cid", "secretkey"
+			c, err := NewClient(opts)
+			if err != nil {
+				t.Fatalf("NewClient must not fail on Logs settings: %v", err)
+			}
+			defer c.Close()
+			if c.Logs == nil || c.Logs.Enabled() {
+				t.Fatal("client.Logs should be a non-nil, disabled logger")
+			}
+			c.Logs.Info("dropped", nil)
+			out := buf.String()
+			if n := strings.Count(out, "\n"); n != 1 {
+				t.Fatalf("warnings = %d, want 1: %q", n, out)
+			}
+			if !strings.Contains(out, "logs are disabled") {
+				t.Errorf("warning text = %q", out)
+			}
+			for _, secret := range []string{testLogsPK[3:], testLogsSK[3:], testLogsSK[3:40]} {
+				if strings.Contains(out, secret) {
+					t.Errorf("warning leaks a credential: %q", out)
+				}
+			}
+		})
+	}
+}
+
+func TestClientWithValidLogsSettingsDoesNotWarn(t *testing.T) {
 	clearLogsEnv(t)
-	_, err := NewClient(Options{ClientID: "cid", APIKey: "secretkey", LogsAccessKey: testLogsPK})
-	if err == nil {
-		t.Fatal("NewClient with half Logs credentials should fail")
+	buf := captureStdLog(t)
+	c, err := NewClient(Options{
+		ClientID: "cid", APIKey: "secretkey",
+		LogsAccessKey: testLogsPK, LogsSecret: testLogsSK,
+		LogsEndpoint: "http://localhost:4318/v1/logs", LogSender: newFakeLogSender(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if !c.Logs.Enabled() {
+		t.Error("client.Logs should be enabled")
+	}
+	if buf.Len() != 0 {
+		t.Errorf("unexpected warning: %q", buf.String())
+	}
+}
+
+func TestClientWithoutMessagingCredentialsStillFails(t *testing.T) {
+	clearLogsEnv(t)
+	t.Setenv("CALLISTO_CLIENT_ID", "")
+	t.Setenv("CALLISTO_API_KEY", "")
+	if _, err := NewClient(Options{LogsAccessKey: testLogsPK, LogsSecret: testLogsSK}); err == nil {
+		t.Fatal("NewClient without messaging credentials should fail")
+	}
+}
+
+func TestLogsNestedContainersAreCapped(t *testing.T) {
+	list := make([]any, 300)
+	for i := range list {
+		list[i] = i
+	}
+	m := map[string]any{}
+	for i := 0; i < 300; i++ {
+		m[fmt.Sprintf("k%03d", i)] = i
+	}
+	av, ok := toAnyValue(map[string]any{"list": list, "map": m, "small": []int{1, 2}}, 1)
+	if !ok || av.KvlistValue == nil {
+		t.Fatal("expected a kvlist")
+	}
+	byKey := map[string]otlpAnyValue{}
+	for _, kv := range av.KvlistValue.Values {
+		byKey[kv.Key] = kv.Value
+	}
+	if n := len(byKey["list"].ArrayValue.Values); n != maxLogNestedItems {
+		t.Errorf("nested list items = %d, want %d", n, maxLogNestedItems)
+	}
+	entries := byKey["map"].KvlistValue.Values
+	if len(entries) != maxLogNestedItems || entries[len(entries)-1].Key != "k127" {
+		t.Errorf("nested map entries = %d (last %q), want %d ending at k127", len(entries), entries[len(entries)-1].Key, maxLogNestedItems)
+	}
+	if n := len(byKey["small"].ArrayValue.Values); n != 2 {
+		t.Errorf("small list items = %d, want 2", n)
+	}
+	top, _ := toAnyValue(list, 1)
+	if n := len(top.ArrayValue.Values); n != maxLogNestedItems {
+		t.Errorf("top-level list items = %d, want %d", n, maxLogNestedItems)
 	}
 }
 
@@ -1046,5 +1196,95 @@ func TestLogsIsolatedFromMessagingCredentials(t *testing.T) {
 	}
 	if !strings.Contains(dump, "/sms/balance") {
 		t.Errorf("messaging request not captured: %s", dump)
+	}
+}
+
+// countAnyValues counts the encoded AnyValues (scalars and containers) under v.
+func countAnyValues(v otlpAnyValue) int {
+	n := 1
+	if v.ArrayValue != nil {
+		for _, e := range v.ArrayValue.Values {
+			n += countAnyValues(e)
+		}
+	}
+	if v.KvlistValue != nil {
+		for _, kv := range v.KvlistValue.Values {
+			n += countAnyValues(kv.Value)
+		}
+	}
+	return n
+}
+
+func TestLogsSharedSubSlicesCannotExplodeTheRecord(t *testing.T) {
+	for _, levels := range []int{5, 12} {
+		t.Run(fmt.Sprint(levels), func(t *testing.T) {
+			var shared any = func() []any {
+				s := make([]any, 128)
+				for i := range s {
+					s[i] = i
+				}
+				return s
+			}()
+			for i := 1; i < levels; i++ {
+				next := make([]any, 128)
+				for j := range next {
+					next[j] = shared // the same slice, 128 times, at every level
+				}
+				shared = next
+			}
+			attrs := map[string]any{"a": shared, "b": map[string]any{"c": shared}, "z_later": "dropped"}
+			start := time.Now()
+			rec := buildLogRecord(time.Unix(0, 0), LogLevelInfo, "bomb", attrs)
+			elapsed := time.Since(start)
+			if elapsed > 100*time.Millisecond {
+				t.Errorf("encoding took %v, want well under 100ms", elapsed)
+			}
+			total := 0
+			for _, kv := range rec.Attributes {
+				if kv.Key == "z_later" {
+					t.Error("an attribute after the spent budget should be dropped")
+				}
+				total += countAnyValues(kv.Value)
+			}
+			if total == 0 || total > maxLogRecordValues {
+				t.Errorf("encoded values = %d, want 1..%d", total, maxLogRecordValues)
+			}
+		})
+	}
+}
+
+func TestLogsValueBudgetDropsLaterAttributes(t *testing.T) {
+	attrs := map[string]any{}
+	for i := 0; i < 30; i++ {
+		list := make([]int, 100)
+		attrs[fmt.Sprintf("k%02d", i)] = list
+	}
+	rec := buildLogRecord(time.Unix(0, 0), LogLevelInfo, "m", attrs)
+	total := 0
+	for _, kv := range rec.Attributes {
+		total += countAnyValues(kv.Value)
+	}
+	if total != maxLogRecordValues {
+		t.Errorf("encoded values = %d, want %d", total, maxLogRecordValues)
+	}
+	// 20 full lists (20 x 101 = 2020 values), then the 21st is cut after 27 items.
+	if len(rec.Attributes) != 21 || len(rec.Attributes[20].Value.ArrayValue.Values) != 27 {
+		t.Errorf("attributes = %d, last list = %d items", len(rec.Attributes), len(rec.Attributes[len(rec.Attributes)-1].Value.ArrayValue.Values))
+	}
+}
+
+func TestLogsTooDeepContainerIsStringifiedWithinBounds(t *testing.T) {
+	huge := make([]int, 10000)
+	deep := map[string]any{"l2": map[string]any{"l3": map[string]any{"l4": map[string]any{"l5": map[string]any{"l6": huge}}}}}
+	av, _ := toAnyValue(deep, 1)
+	for i := 0; i < maxLogAnyValueDepth; i++ {
+		av = av.KvlistValue.Values[0].Value
+	}
+	if av.StringValue == nil {
+		t.Fatal("level 6 should be stringified")
+	}
+	s := *av.StringValue
+	if n := utf8.RuneCountInString(s); n > maxLogAttrValueChars || !strings.HasSuffix(s, "…") || !strings.HasPrefix(s, "[0,0,0") {
+		t.Errorf("stringified = %d chars, prefix %q", n, s[:min(len(s), 10)])
 	}
 }

@@ -8,6 +8,7 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
+using Callisto.Sdk.Http;
 
 namespace Callisto.Sdk.Logs;
 
@@ -66,7 +67,10 @@ public sealed class CallistoLogger : IDisposable, IAsyncDisposable
     /// <c>CALLISTO_LOGS_SECRET</c>, <c>CALLISTO_LOGS_ENDPOINT</c>, <c>CALLISTO_SERVICE_NAME</c> /
     /// <c>OTEL_SERVICE_NAME</c> and <c>CALLISTO_ENVIRONMENT</c>. Throws
     /// <see cref="ArgumentException"/> when only one of key and secret resolves, when either is
-    /// malformed, or when the endpoint is not an absolute http(s) URL.
+    /// malformed, or when the endpoint is not an absolute https URL (http is accepted only for
+    /// <c>localhost</c>, <c>127.0.0.1</c>, <c>::1</c> and <c>*.localhost</c>).
+    /// <see cref="CallistoClient"/> does not throw on these: it traces one warning and keeps a
+    /// disabled logger.
     /// </summary>
     public CallistoLogger(CallistoLoggerOptions? options = null)
     {
@@ -86,7 +90,7 @@ public sealed class CallistoLogger : IDisposable, IAsyncDisposable
             "unknown_service")!;
         Environment = Coalesce(options.Environment, Env("CALLISTO_ENVIRONMENT"));
 
-        if (accessKey is null && secret is null)
+        if (options.Disabled || (accessKey is null && secret is null))
         {
             return; // disabled: no queue, no task, every call is a no-op
         }
@@ -111,10 +115,11 @@ public sealed class CallistoLogger : IDisposable, IAsyncDisposable
         }
 
         var endpoint = Coalesce(options.LogsEndpoint, Env("CALLISTO_LOGS_ENDPOINT"), DefaultEndpoint)!;
-        if (!Uri.TryCreate(endpoint, UriKind.Absolute, out var uri) ||
-            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        if (!SecureUrl.IsSecure(endpoint))
         {
-            throw new ArgumentException("Callisto: logsEndpoint must be an absolute http(s) URL.");
+            throw new ArgumentException(
+                "Callisto: logsEndpoint must be an absolute https URL " +
+                "(http is accepted only for localhost, 127.0.0.1, ::1 and *.localhost).");
         }
 
         _endpoint = endpoint;

@@ -152,8 +152,8 @@ RSpec.describe Callisto::Logger do
     }
   end
 
-  it "uses version 0.2.0" do
-    expect(Callisto::VERSION).to eq("0.2.0")
+  it "uses version 0.3.0" do
+    expect(Callisto::VERSION).to eq("0.3.0")
   end
 
   describe "wire format" do
@@ -196,7 +196,7 @@ RSpec.describe Callisto::Logger do
         "Basic cGtfMDAxMTIyMzM0NDU1NjY3Nzg4OTlhYWJiY2NkZGVlZmY6c2tfMDAwMTAyMDMwNDA1MDYwNzA4MDkwYTBiMGMwZDBlMGYxMDExMTIxMzE0MTUxNjE3"
       )
       expect(call[:headers]["Content-Type"]).to eq("application/json")
-      expect(call[:headers]["User-Agent"]).to eq("callisto-sdk-ruby/0.2.0")
+      expect(call[:headers]["User-Agent"]).to eq("callisto-sdk-ruby/0.3.0")
     end
 
     it "maps the five levels to OTLP severities, via the helpers and log()" do
@@ -673,10 +673,48 @@ RSpec.describe Callisto::Logger do
       "a relative endpoint" => { logs_access_key: LoggerSpecSupport::ACCESS_KEY,
                                  logs_secret: LoggerSpecSupport::SECRET, logs_endpoint: "/v1/logs" },
       "a non-http endpoint" => { logs_access_key: LoggerSpecSupport::ACCESS_KEY,
-                                 logs_secret: LoggerSpecSupport::SECRET, logs_endpoint: "ftp://x/v1/logs" }
+                                 logs_secret: LoggerSpecSupport::SECRET, logs_endpoint: "ftp://x/v1/logs" },
+      "an http endpoint" => { logs_access_key: LoggerSpecSupport::ACCESS_KEY,
+                              logs_secret: LoggerSpecSupport::SECRET,
+                              logs_endpoint: "http://logs.example.test/v1/logs" },
+      "an http lookalike of localhost" => { logs_access_key: LoggerSpecSupport::ACCESS_KEY,
+                                            logs_secret: LoggerSpecSupport::SECRET,
+                                            logs_endpoint: "http://localhost.evil.test/v1/logs" },
+      "an http non-loopback address" => { logs_access_key: LoggerSpecSupport::ACCESS_KEY,
+                                          logs_secret: LoggerSpecSupport::SECRET,
+                                          logs_endpoint: "http://127.0.0.2/v1/logs" },
+      "an https URL without a host" => { logs_access_key: LoggerSpecSupport::ACCESS_KEY,
+                                         logs_secret: LoggerSpecSupport::SECRET,
+                                         logs_endpoint: "https:///v1/logs" }
     }.each do |label, args|
       it "raises Callisto::ValidationError on #{label}" do
         expect { Callisto::Logger.new(**args) }.to raise_error(Callisto::ValidationError)
+      end
+    end
+
+    it "raises on an http endpoint coming from the environment" do
+      ENV["CALLISTO_LOGS_ACCESS_KEY"] = LoggerSpecSupport::ACCESS_KEY
+      ENV["CALLISTO_LOGS_SECRET"] = LoggerSpecSupport::SECRET
+      ENV["CALLISTO_LOGS_ENDPOINT"] = "http://logs.example.test/v1/logs"
+      expect { Callisto::Logger.new }.to raise_error(Callisto::ValidationError, /https/)
+    end
+
+    %w[
+      https://logs.example.test/v1/logs
+      HTTPS://logs.example.test/v1/logs
+      http://localhost/v1/logs
+      http://localhost:4318/v1/logs
+      http://127.0.0.1:4318/v1/logs
+      http://[::1]:4318/v1/logs
+      http://logs.localhost/v1/logs
+    ].each do |endpoint|
+      it "accepts the endpoint #{endpoint}" do
+        sender = LoggerSpecSupport::RecordingSender.new
+        logger = build_logger(sender: sender, logs_endpoint: endpoint)
+        expect(logger.enabled?).to be(true)
+        logger.info("hi")
+        logger.flush
+        expect(sender.calls.first[:url]).to eq(endpoint)
       end
     end
 
@@ -692,6 +730,76 @@ RSpec.describe Callisto::Logger do
     end
   end
 
+  describe "attribute bounds" do
+    def count_values(any_value)
+      count = 1
+      if any_value["arrayValue"]
+        any_value["arrayValue"]["values"].each { |v| count += count_values(v) }
+      elsif any_value["kvlistValue"]
+        any_value["kvlistValue"]["values"].each { |kv| count += count_values(kv["value"]) }
+      end
+      count
+    end
+
+    def encoded_attributes(logger, attributes)
+      record = logger.send(:build_record, "info", "m", attributes)
+      JSON.parse(JSON.generate(record))["attributes"] || []
+    end
+
+    it "caps each nested array and hash at 128 items" do
+      logger = build_logger
+      attrs = encoded_attributes(logger, {
+        "list" => (0...300).to_a,
+        "map" => (0...300).to_h { |i| [format("k%03d", i), i] },
+        "small" => [1, 2]
+      }).to_h { |kv| [kv["key"], kv["value"]] }
+
+      list = attrs["list"]["arrayValue"]["values"]
+      expect(list.size).to eq(Callisto::Logger::MAX_NESTED_ITEMS)
+      expect(list.last).to eq("intValue" => "127")
+      map = attrs["map"]["kvlistValue"]["values"]
+      expect(map.size).to eq(Callisto::Logger::MAX_NESTED_ITEMS)
+      expect(map.last["key"]).to eq("k127")
+      expect(attrs["small"]["arrayValue"]["values"].size).to eq(2)
+    end
+
+    [5, 12].each do |levels|
+      it "cannot be exploded by a shared sub-array (#{levels} levels)" do
+        shared = (0...128).to_a
+        (levels - 1).times { shared = Array.new(128, shared) } # the same array, 128 times
+        logger = build_logger
+        started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        attrs = encoded_attributes(logger, { "a" => shared, "b" => { "c" => shared }, "later" => "dropped" })
+        elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+        expect(elapsed).to be < 0.1
+        expect(attrs.map { |kv| kv["key"] }).not_to include("later")
+        total = attrs.sum { |kv| count_values(kv["value"]) }
+        expect(total).to be_between(1, Callisto::Logger::MAX_RECORD_VALUES)
+      end
+    end
+
+    it "drops later attributes once the value budget is spent" do
+      logger = build_logger
+      attrs = encoded_attributes(logger, (0...30).to_h { |i| [format("k%02d", i), Array.new(100, 0)] })
+      expect(attrs.sum { |kv| count_values(kv["value"]) }).to eq(Callisto::Logger::MAX_RECORD_VALUES)
+      # 20 full arrays (20 x 101 = 2020 values), then the 21st is cut after 27 items.
+      expect(attrs.size).to eq(21)
+      expect(attrs.last["value"]["arrayValue"]["values"].size).to eq(27)
+    end
+
+    it "stringifies a too-deep container within bounds" do
+      logger = build_logger
+      deep = { "l2" => { "l3" => { "l4" => { "l5" => { "l6" => Array.new(10_000, 0) } } } } }
+      value = encoded_attributes(logger, { "deep" => deep }).first["value"]
+      5.times { value = value["kvlistValue"]["values"].first["value"] }
+      text = value["stringValue"]
+      expect(text.length).to be <= Callisto::Logger::MAX_ATTRIBUTE_CHARS
+      expect(text).to start_with("[0,0,0")
+      expect(text).to end_with("…")
+    end
+  end
+
   describe "on the client" do
     let(:messaging_url) { "https://api.callistosignal.com/v1/sms/balance?format=full" }
 
@@ -703,11 +811,80 @@ RSpec.describe Callisto::Logger do
       client.close
     end
 
-    it "raises a configuration error on half Logs credentials" do
+    {
+      "half Logs credentials in the environment" => { "CALLISTO_LOGS_SECRET" => LoggerSpecSupport::SECRET },
+      "only the access key in the environment" => { "CALLISTO_LOGS_ACCESS_KEY" => LoggerSpecSupport::ACCESS_KEY },
+      "a malformed secret in the environment" => {
+        "CALLISTO_LOGS_ACCESS_KEY" => LoggerSpecSupport::ACCESS_KEY,
+        "CALLISTO_LOGS_SECRET" => LoggerSpecSupport::SECRET[0, 40]
+      },
+      "swapped key and secret in the environment" => {
+        "CALLISTO_LOGS_ACCESS_KEY" => LoggerSpecSupport::SECRET,
+        "CALLISTO_LOGS_SECRET" => LoggerSpecSupport::ACCESS_KEY
+      },
+      "an http endpoint in the environment" => {
+        "CALLISTO_LOGS_ACCESS_KEY" => LoggerSpecSupport::ACCESS_KEY,
+        "CALLISTO_LOGS_SECRET" => LoggerSpecSupport::SECRET,
+        "CALLISTO_LOGS_ENDPOINT" => "http://logs.example.test/v1/logs"
+      }
+    }.each do |label, env|
+      it "does not raise on #{label}: it warns once and disables logs" do
+        env.each { |k, v| ENV[k] = v }
+        client = nil
+        expect { client = Callisto::Client.new(client_id: "test-client", api_key: "test-key") }
+          .to output(/Logs are disabled/).to_stderr
+        expect(client.logs.enabled?).to be(false)
+        expect { client.logs.info("dropped") }.not_to raise_error
+        client.close
+      end
+    end
+
+    it "warns exactly once, without the key or the secret" do
+      ENV["CALLISTO_LOGS_ACCESS_KEY"] = LoggerSpecSupport::ACCESS_KEY
+      ENV["CALLISTO_LOGS_SECRET"] = LoggerSpecSupport::SECRET[0, 40]
+      warnings = []
+      allow(Kernel).to receive(:warn) { |*args| warnings << args.join(" ") }
+      client = Callisto::Client.new(client_id: "test-client", api_key: "test-key")
+      client.close
+
+      expect(warnings.size).to eq(1)
+      expect(warnings.first).to include("Logs are disabled")
+      [LoggerSpecSupport::ACCESS_KEY, LoggerSpecSupport::SECRET, LoggerSpecSupport::SECRET[0, 40]].each do |secret|
+        expect(warnings.first).not_to include(secret)
+      end
+    end
+
+    it "does not raise on half Logs credentials passed as arguments" do
+      client = nil
       expect do
-        Callisto::Client.new(client_id: "test-client", api_key: "test-key",
-                             logs_access_key: LoggerSpecSupport::ACCESS_KEY)
-      end.to raise_error(Callisto::ValidationError)
+        client = Callisto::Client.new(client_id: "test-client", api_key: "test-key",
+                                      logs_access_key: LoggerSpecSupport::ACCESS_KEY)
+      end.to output(/Logs are disabled/).to_stderr
+      expect(client.logs.enabled?).to be(false)
+      client.close
+    end
+
+    it "does not warn on valid Logs settings" do
+      client = nil
+      expect do
+        client = Callisto::Client.new(client_id: "test-client", api_key: "test-key",
+                                      logs_access_key: LoggerSpecSupport::ACCESS_KEY,
+                                      logs_secret: LoggerSpecSupport::SECRET,
+                                      logs_endpoint: "http://localhost:4318/v1/logs")
+      end.not_to output.to_stderr
+      expect(client.logs.enabled?).to be(true)
+      client.logs.close
+      client.close
+    end
+
+    it "still raises on missing messaging credentials" do
+      saved = %w[CALLISTO_CLIENT_ID CALLISTO_API_KEY].to_h { |k| [k, ENV.delete(k)] }
+      begin
+        expect { Callisto::Client.new(logs_access_key: LoggerSpecSupport::ACCESS_KEY) }
+          .to raise_error(Callisto::ValidationError)
+      ensure
+        saved.each { |k, v| ENV[k] = v unless v.nil? }
+      end
     end
 
     it "keeps messaging and Logs credentials apart, and close flushes the logger" do

@@ -1,7 +1,9 @@
+import { isSecureEndpoint, resolveSendSourceContext } from "./config.js";
 import { CallistoError, RateLimitError } from "./errors.js";
+import { maskLines, maskSecrets } from "./scrub.js";
 
 /** SDK version reported in `context.sdk.version`. Mirrors package.json. */
-export const SDK_VERSION = "1.2.0";
+export const SDK_VERSION = "1.3.0";
 
 export type ErrorLevel = "fatal" | "error" | "warning" | "info";
 
@@ -72,7 +74,8 @@ function nodeFs(): FsLike | null {
 
 /**
  * Best-effort source window around a frame's error line — `pre_context` /
- * `context_line` / `post_context`, up to CONTEXT_LINES each side. Returns the
+ * `context_line` / `post_context`, up to CONTEXT_LINES each side. Every line
+ * goes through the secret masker (scrub.ts) before it is attached. Returns the
  * frame unchanged when the file can't be read (no Node fs, missing/oversized
  * file, line out of range), so the frame simply renders without source.
  */
@@ -92,9 +95,9 @@ function withSourceContext(frame: StackFrame): StackFrame {
     const start = Math.max(0, index - CONTEXT_LINES);
     return {
       ...frame,
-      pre_context: lines.slice(start, index),
-      context_line: lines[index],
-      post_context: lines.slice(index + 1, index + 1 + CONTEXT_LINES),
+      pre_context: maskLines(lines.slice(start, index)),
+      context_line: maskSecrets(lines[index]),
+      post_context: maskLines(lines.slice(index + 1, index + 1 + CONTEXT_LINES)),
     };
   } catch {
     return frame;
@@ -115,10 +118,16 @@ export interface ReportableRequest {
 export type Sender = (url: string, payload: unknown) => Promise<void>;
 
 export interface ErrorReporterOptions {
+  /** Ingest DSN: https only (http only for localhost). Anything else disables reporting. */
   dsn?: string;
   sdk?: SdkMeta;
   environment?: string;
   sender?: Sender;
+  /**
+   * Attach masked source lines to stack frames. Default true; falls back to
+   * `CALLISTO_SEND_SOURCE_CONTEXT` (`false` / `0` turns it off).
+   */
+  sendSourceContext?: boolean;
 }
 
 function defaultSender(fetchImpl: typeof fetch): Sender {
@@ -134,13 +143,34 @@ function defaultSender(fetchImpl: typeof fetch): Sender {
   };
 }
 
-function isValidUrl(dsn: string | undefined): dsn is string {
-  if (!dsn) return false;
+/**
+ * Validate a DSN: an absolute https URL (http only for localhost). A DSN that
+ * is set but rejected disables reporting with one console warning that never
+ * echoes the DSN (it carries the ingest key).
+ */
+function acceptDsn(dsn: string | undefined): string | undefined {
+  if (!dsn) return undefined;
+  let url: URL | undefined;
   try {
-    const u = new URL(dsn);
-    return u.protocol === "http:" || u.protocol === "https:";
+    url = new URL(dsn);
   } catch {
-    return false;
+    url = undefined;
+  }
+  if (url && isSecureEndpoint(url)) return dsn;
+  warnOnce(
+    url && url.protocol === "http:"
+      ? "Callisto: error reporting is disabled: the DSN must use https " +
+          "(plain http is allowed only for localhost)."
+      : "Callisto: error reporting is disabled: the DSN is not an absolute https URL.",
+  );
+  return undefined;
+}
+
+function warnOnce(message: string): void {
+  try {
+    globalThis.console?.warn?.(message);
+  } catch {
+    // a console that throws must not break construction
   }
 }
 
@@ -187,11 +217,12 @@ export class ErrorReporter {
   private readonly sdk: SdkMeta;
   private readonly environment?: string;
   private readonly sender: Sender;
+  private readonly sendSourceContext: boolean;
   private user?: Record<string, unknown>;
   private readonly inflight: Set<Promise<void>> = new Set();
 
   constructor(options: ErrorReporterOptions = {}, fetchImpl: typeof fetch = fetch) {
-    this.dsn = isValidUrl(options.dsn) ? options.dsn : undefined;
+    this.dsn = acceptDsn(options.dsn);
     this.enabled = this.dsn !== undefined;
     this.sdk = options.sdk ?? {
       name: "callisto-sdk",
@@ -200,6 +231,7 @@ export class ErrorReporter {
     };
     this.environment = options.environment;
     this.sender = options.sender ?? defaultSender(fetchImpl);
+    this.sendSourceContext = resolveSendSourceContext(options.sendSourceContext);
   }
 
   /** Whether a valid DSN is configured. */
@@ -334,7 +366,8 @@ export class ErrorReporter {
       // Source context only for genuine application exceptions. For transport
       // errors a call site can embed the outgoing request body as literal
       // arguments — capturing it would violate the no-request-body guarantee.
-      payload.stacktrace = reqInfo ? frames : frames.map(withSourceContext);
+      payload.stacktrace =
+        reqInfo || !this.sendSourceContext ? frames : frames.map(withSourceContext);
     }
     if (reqInfo) {
       payload.request = { method: reqInfo.method, path: reqInfo.path };

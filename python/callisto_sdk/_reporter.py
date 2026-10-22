@@ -8,6 +8,7 @@ from typing import Any, Callable, Optional
 
 import httpx
 
+from ._config import is_secure_url
 from .errors import CallistoError, NetworkError
 
 SDK_NAME = "callisto-sdk"
@@ -329,6 +330,6 @@ class ErrorReporter:
 
 
 def _is_valid_dsn(dsn: Optional[str]) -> bool:
-    if not dsn or not isinstance(dsn, str):
-        return False
-    return dsn.startswith("http://") or dsn.startswith("https://")
+    # https only (http on a loopback host for local development); anything else
+    # leaves the reporter a silent no-op.
+    return bool(dsn) and is_secure_url(dsn)

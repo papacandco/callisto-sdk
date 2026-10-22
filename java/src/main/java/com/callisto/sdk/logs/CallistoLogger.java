@@ -1,13 +1,13 @@
 package com.callisto.sdk.logs;
 
 import com.callisto.sdk.errors.ValidationException;
+import com.callisto.sdk.http.SecureUrl;
 import com.callisto.sdk.reporting.ErrorReporter;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
-import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
@@ -33,6 +33,11 @@ import java.util.regex.Pattern;
  * <p>Works on its own, without messaging credentials. It needs an API key of scope
  * <b>Logs</b>: an access key {@code pk_…} and a secret {@code sk_…}. With neither, the logger is
  * disabled and every call is a cheap no-op. A log call never throws and never waits on the network.
+ *
+ * <p>{@link Builder#build()} throws {@link ValidationException} on a half-set or malformed key,
+ * or on an endpoint that is not {@code https} ({@code http} only for {@code localhost},
+ * {@code 127.0.0.1}, {@code ::1} and {@code *.localhost}). {@link com.callisto.sdk.CallistoClient}
+ * does not: it logs one warning and keeps a disabled logger.
  *
  * <pre>{@code
  * try (CallistoLogger logs = CallistoLogger.builder()
@@ -119,9 +124,10 @@ public final class CallistoLogger implements AutoCloseable {
 
         String resolvedEndpoint = orEnv(b.endpoint, env, "CALLISTO_LOGS_ENDPOINT");
         this.endpoint = resolvedEndpoint != null ? resolvedEndpoint : DEFAULT_ENDPOINT;
-        if (enabled && !isHttpUrl(endpoint)) {
+        if (enabled && !SecureUrl.isSecure(endpoint)) {
             throw new ValidationException(
-                    "Callisto logs: logsEndpoint must be an absolute http(s) URL.");
+                    "Callisto logs: logsEndpoint must be an absolute https URL "
+                            + "(http is accepted only for localhost, 127.0.0.1, ::1 and *.localhost).");
         }
 
         String service = orEnv(b.serviceName, env, "CALLISTO_SERVICE_NAME");
@@ -472,17 +478,6 @@ public final class CallistoLogger implements AutoCloseable {
         return v == null || v.isEmpty() ? null : v;
     }
 
-    private static boolean isHttpUrl(String url) {
-        try {
-            URI uri = new URI(url);
-            String scheme = uri.getScheme();
-            return uri.isAbsolute() && uri.getHost() != null
-                    && ("http".equalsIgnoreCase(scheme) || "https".equalsIgnoreCase(scheme));
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
     /** Pauses the worker between retries; injectable so tests do not wait. */
     interface Sleeper {
         void sleep(long millis) throws InterruptedException;
@@ -516,7 +511,10 @@ public final class CallistoLogger implements AutoCloseable {
             return this;
         }
 
-        /** Full POST URL (env {@code CALLISTO_LOGS_ENDPOINT}, default {@value #DEFAULT_ENDPOINT}). */
+        /**
+         * Full POST URL (env {@code CALLISTO_LOGS_ENDPOINT}, default {@value #DEFAULT_ENDPOINT}).
+         * Must be {@code https}; {@code http} is accepted only for a loopback host.
+         */
         public Builder endpoint(String endpoint) {
             this.endpoint = endpoint;
             return this;

@@ -227,13 +227,15 @@ error issue that carries the same trace.
 | Environment variable | Default | Meaning |
 | --- | --- | --- |
 | `CALLISTO_LOGS_ACCESS_KEY` | none | `pk_…` of a Logs key. Absent (with the secret) → logging disabled, a no-op. |
-| `CALLISTO_LOGS_SECRET` | none | `sk_…` of that key. Setting only one of the two is a configuration error. |
-| `CALLISTO_LOGS_ENDPOINT` | `https://logs.callistosignal.com/v1/logs` | Full POST URL. |
+| `CALLISTO_LOGS_SECRET` | none | `sk_…` of that key. A missing half or a malformed value is a configuration error for a standalone logger; the messaging client never fails on it, it disables logs and warns once. |
+| `CALLISTO_LOGS_ENDPOINT` | `https://logs.callistosignal.com/v1/logs` | Full POST URL. Must be `https` (plain `http` only for `localhost`). |
 | `CALLISTO_SERVICE_NAME` | `OTEL_SERVICE_NAME`, else `unknown_service` | The service the logs come from. |
 | `CALLISTO_ENVIRONMENT` | none | Sent as `deployment.environment.name`. |
 
 Logs are queued in memory and sent in batches in the background (every 5 s, or once 100 lines are
 waiting), with retries on rate limits. Logging never throws and never waits on the network.
+The logger is for server-side code only: the JavaScript SDK refuses a Logs secret in a browser,
+where anyone could read it from the bundle.
 **PHP is the exception:** it sends synchronously, in batches of 100 and at the end of the request,
 with a 3 s timeout and no retry. Python, Go and Java ship an adapter for their standard logging
 (`logging.Handler`, `slog.Handler`, `java.util.logging.Handler`), and PHP ships a PSR-3 logger.

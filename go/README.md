@@ -252,7 +252,9 @@ client.CaptureMessage("checkout started", "info")
 client.CaptureException(err, callisto.WithLevel("warning"), callisto.WithContext(map[string]any{"order": 42}))
 ```
 
-Configure the DSN via `Options.ErrorDSN` or `CALLISTO_APP_ERROR_DSN`. Absent a DSN, reporting is a
+Configure the DSN via `Options.ErrorDSN` or `CALLISTO_APP_ERROR_DSN`. The DSN must be `https`
+(plain `http` only for `localhost`, `127.0.0.1`, `::1` and `*.localhost`); any other DSN is ignored
+like an absent one. Absent a DSN, reporting is a
 complete no-op and the SDK behaves exactly as before. Delivery is **background and best-effort** —
 it never alters or delays the original error (which is still returned), and the reporter's own
 failures are silently swallowed.
@@ -331,9 +333,18 @@ Every setting is optional and falls back to an environment variable:
 
 - No access key and no secret: logging is **disabled**. Every call is a cheap no-op, nothing is
   sent, and no goroutine is started.
-- Only one of the two, a value that is not `pk_` + 32 lowercase hex / `sk_` + 48 lowercase hex,
-  or an endpoint that is not an absolute `http(s)` URL: `NewLogger` (or `NewClient`) returns a
-  configuration error, so a typo cannot silently lose every log.
+- **HTTPS only.** The endpoint must be an absolute `https` URL: the secret travels in the
+  `Authorization` header. Plain `http` is accepted only for `localhost`, `127.0.0.1`, `::1` and
+  `*.localhost` (local development). The error DSN follows the same rule.
+- Invalid settings are: only one of the two, a value that is not `pk_` + 32 lowercase hex /
+  `sk_` + 48 lowercase hex, or an endpoint that breaks the HTTPS rule. What happens then depends on
+  who builds the logger:
+  - **`NewLogger` (standalone)** returns a configuration error, so a typo cannot silently lose
+    every log.
+  - **`NewClient`** never fails because of the Logs settings. It writes **one** warning through the
+    standard `log` package (`log.Printf`, so it follows `log.SetOutput` / `slog.SetDefault`), and
+    `client.Logs` is a disabled no-op logger; SMS, OTP and WhatsApp keep working. The warning never
+    contains the key or the secret. Missing messaging credentials still return an error.
 
 ### Quick start
 
@@ -357,7 +368,8 @@ logger.Log(callisto.LogLevelError, "refund failed", nil)
 ```
 
 On the messaging client, the same logger is `client.Logs`, built from the `Logs*` options (or the
-env vars). It is a no-op logger when no Logs key resolves, and `client.Close()` also closes it. The
+env vars). It is a no-op logger when no Logs key resolves or the Logs settings are invalid (one
+warning, see above), and `client.Close()` also closes it. The
 messaging credentials are never used for logs, and the Logs secret never goes to the messaging API.
 
 ```go
@@ -377,7 +389,11 @@ Methods: `Debug`, `Info`, `Warn`, `Error`, `Fatal(msg string, attrs map[string]a
 process. `attrs` may be nil or nested: strings, bools, integers (sent as OTLP `intValue`), floats,
 slices and maps are mapped to OTLP values, nil values are left out, and anything else is turned
 into a string. The body is cut at 32 768 characters, string values at 8 192 (the cut ends with
-`…`), and a record keeps at most 128 attributes (the first 128 by key).
+`…`), a record keeps at most 128 attributes (the first 128 by key), and each nested slice or map
+keeps at most 128 items (the first 128; map entries by key). A record encodes at most 2 048 values
+in total (scalars and containers, at every level; a slice or map referenced several times counts
+each time): once that budget is spent, the remaining values and attributes are dropped. Values
+nested deeper than 5 levels are written as JSON within the same budget.
 
 ### Trace correlation
 

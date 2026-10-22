@@ -3,6 +3,7 @@ package callisto
 import (
 	"errors"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -32,7 +33,8 @@ type Options struct {
 	// Timeout is used as-is.
 	HTTPClient *http.Client
 	// ErrorDSN is the error-reporting ingest DSN. Falls back to
-	// CALLISTO_APP_ERROR_DSN. Absent → error reporting is fully disabled.
+	// CALLISTO_APP_ERROR_DSN. Absent, or not https (http only on a loopback
+	// host) → error reporting is fully disabled.
 	ErrorDSN string
 	// Environment is an optional tag attached to reported errors. Falls back to
 	// CALLISTO_ENVIRONMENT.
@@ -43,13 +45,15 @@ type Options struct {
 
 	// LogsAccessKey is the pk_… of a Logs-scope API key (not the messaging
 	// key). Falls back to CALLISTO_LOGS_ACCESS_KEY. With no Logs key and no
-	// secret, client.Logs is a no-op logger.
+	// secret, client.Logs is a no-op logger. Invalid Logs settings never make
+	// NewClient fail: they log one warning and client.Logs is a no-op logger.
 	LogsAccessKey string
 	// LogsSecret is the sk_… of that Logs key. Falls back to
 	// CALLISTO_LOGS_SECRET.
 	LogsSecret string
 	// LogsEndpoint is the full logs POST URL. Falls back to
-	// CALLISTO_LOGS_ENDPOINT, then DefaultLogsEndpoint.
+	// CALLISTO_LOGS_ENDPOINT, then DefaultLogsEndpoint. Must be https (http
+	// only for localhost, 127.0.0.1, ::1 and *.localhost).
 	LogsEndpoint string
 	// ServiceName is the service.name attached to shipped logs. Falls back to
 	// CALLISTO_SERVICE_NAME, then OTEL_SERVICE_NAME, then "unknown_service".
@@ -104,6 +108,29 @@ func resolveConfig(opts Options) (config, error) {
 		errorDSN:    errorDSN,
 		environment: environment,
 	}, nil
+}
+
+// isSecureURL reports whether raw is an absolute https URL, or an http URL on a
+// loopback host (localhost, 127.0.0.1, ::1, *.localhost). Secrets (the Logs
+// sk_, the error DSN) must never travel in clear text, so plain http is only
+// for local development.
+func isSecureURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		return false
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return true
+	case "http":
+		return host == "localhost" || host == "127.0.0.1" || host == "::1" || strings.HasSuffix(host, ".localhost")
+	default:
+		return false
+	}
 }
 
 // firstNonEmpty returns the first non-empty string among its arguments.

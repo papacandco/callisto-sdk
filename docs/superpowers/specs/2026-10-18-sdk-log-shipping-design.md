@@ -47,14 +47,35 @@ Same resolution order as the rest of the SDK: explicit argument, then environmen
 | `serviceName` / `service_name` | `CALLISTO_SERVICE_NAME`, then `OTEL_SERVICE_NAME` | `unknown_service` | resource `service.name` |
 | `environment` | `CALLISTO_ENVIRONMENT` (existing) | none | resource `deployment.environment.name` |
 
-Validation rules:
+Validation rules (amended 2026-10-22 after the SDK pentest, `callisto-docs/security/2026-10-17-pentest-sdk.md`):
 - Both key and secret absent → logs **disabled**: every call is a cheap no-op and nothing is
   sent.
-- Exactly one of the two present, or a value that does not match `^pk_[0-9a-f]{32}$` /
-  `^sk_[0-9a-f]{48}$` → the constructor **fails fast** with the SDK's configuration error (the
-  same error type used for missing messaging credentials). A typo must not silently lose every
-  log.
-- `logsEndpoint` must be an absolute `http(s)` URL (configuration error otherwise).
+- Invalid logs settings are any of the following:
+  - exactly one of the two present;
+  - a value that does not match `^pk_[0-9a-f]{32}$` / `^sk_[0-9a-f]{48}$`;
+  - an endpoint that is not https (rule below);
+  - JS only: a secret configured in a browser (SDK-01).
+- What happens with invalid logs settings depends on who builds the logger:
+  - **Standalone logger:** it **fails fast** with the SDK's configuration error. A typo must not
+    silently lose every log.
+  - **Messaging client (SDK-05):** it **never throws because of the logs settings**. It builds a
+    disabled logger and emits **one** warning through the language's usual channel. The warning
+    never contains the key or the secret. A bad `CALLISTO_LOGS_*` in the environment must not
+    take SMS/OTP down.
+- **HTTPS only (SDK-04):** `logsEndpoint`, and the error DSN, must be `https`. `http` is
+  accepted only for `localhost`, `127.0.0.1`, `::1` and `*.localhost`. The secret travels in the
+  `Authorization` header.
+- **JS, server only (SDK-01):** a `sk_` secret is refused when the code runs in a browser.
+  `package.json` declares `"sideEffects": false`, and the README says the logger is
+  server-side only.
+
+Error reporter changes from the same pentest (PHP and JS, the two arms audited):
+- the source context (lines around the failing line) is pattern-masked (SDK-02), and can be
+  turned off (`sendSourceContext`, `CALLISTO_SEND_SOURCE_CONTEXT=false`);
+- PHP key redaction also covers `key`, `access_key`, `private_key`, `bearer`, `credential` and
+  `signature`, and is recursive (SDK-03, SDK-09);
+- the user context is reset on every request (SDK-06);
+- the authenticated user's e-mail is opt-in (`sendDefaultPii`, SDK-13).
 
 ## Surface
 
@@ -201,7 +222,12 @@ Rules:
 
 - `body` is truncated to **32 768** characters; string attribute values to **8 192**. The cut is
   marked with a trailing `…`.
-- At most **128** attributes per record (the extra ones are dropped).
+- At most **128** attributes per record (the extra ones are dropped), and at most 128 elements in each nested list or map.
+- **Per-record budget (added 2026-10-22, pentest follow-up):** at most **2 048** encoded values per
+  record, counting scalars and containers across all attributes and all nesting levels. A reused
+  sub-object counts again each time it is visited. Once the budget is spent, the list or map
+  being filled is cut and later attributes are dropped. Without it, a tiny object that reuses one
+  128-element list at 5 levels would expand to 128^5 values and hang the host.
 - A batch is at most **500** records, or about **1 MB** of serialized JSON (it is cut at whichever
   comes first). This stays well under the 5 MB server cap.
 

@@ -60,6 +60,13 @@ module Callisto
     MAX_BODY_CHARS = 32_768
     MAX_ATTRIBUTE_CHARS = 8_192
     MAX_ATTRIBUTES = 128
+    # Items kept per nested Array / Hash; the extra ones are dropped.
+    MAX_NESTED_ITEMS = 128
+    # Encoded values (scalars + containers) per record, across all attributes and nesting levels.
+    # A sub-array or sub-hash referenced several times counts each time it is visited.
+    MAX_RECORD_VALUES = 2_048
+    # http:// is accepted only for these hosts (and *.localhost): local development.
+    LOOPBACK_HOSTS = %w[localhost 127.0.0.1 ::1].freeze
     MAX_DEPTH = 5
     ELLIPSIS = "…"
 
@@ -169,6 +176,33 @@ module Callisto
 
     attr_reader :endpoint, :service_name, :environment, :flush_timeout
 
+    # Whether +url+ is an absolute https URL, or an http URL on a loopback host (localhost,
+    # 127.0.0.1, ::1, *.localhost). Secrets (the Logs sk_, the error DSN) never travel in clear
+    # text.
+    # @param url [String, nil]
+    # @return [Boolean]
+    def self.secure_url?(url)
+      uri = URI.parse(url.to_s.strip)
+      return false unless uri.is_a?(URI::HTTP) && uri.absolute?
+
+      host = uri.host.to_s.downcase.delete_prefix("[").delete_suffix("]")
+      return false if host.empty?
+      return true if uri.scheme.casecmp?("https")
+
+      LOOPBACK_HOSTS.include?(host) || host.end_with?(".localhost")
+    rescue StandardError
+      false
+    end
+
+    # A disabled logger that reads no credential setting: every call is a no-op. The client
+    # uses it when the Logs settings are invalid.
+    # @return [Logger]
+    def self.disabled(service_name: nil, environment: nil)
+      logger = allocate
+      logger.send(:init_disabled, service_name, environment)
+      logger
+    end
+
     # @param logs_access_key [String, nil] pk_... of a Logs key; falls back to
     #   CALLISTO_LOGS_ACCESS_KEY
     # @param logs_secret [String, nil] sk_... of that key; falls back to CALLISTO_LOGS_SECRET
@@ -186,7 +220,9 @@ module Callisto
     # @param sleeper [#call, nil] +call(seconds)+ used for retry delays (tests inject a recorder)
     # @param flush_interval [Float] seconds between timed sends
     # @raise [ValidationError] when only one credential is present, a credential is malformed,
-    #   or the endpoint is not an absolute http(s) URL
+    #   or the endpoint is not an absolute https URL (http only for localhost, 127.0.0.1, ::1 and
+    #   *.localhost). Callisto::Client does not raise on these: it warns once and keeps a
+    #   disabled logger (see Logger.disabled).
     def initialize(logs_access_key: nil, logs_secret: nil, logs_endpoint: nil,
                    service_name: nil, environment: nil, flush_timeout: DEFAULT_FLUSH_TIMEOUT,
                    sender: nil, clock: nil, sleeper: nil, flush_interval: FLUSH_INTERVAL)
@@ -330,6 +366,19 @@ module Callisto
 
     private
 
+    def init_disabled(service_name, environment)
+      @endpoint = DEFAULT_ENDPOINT
+      @service_name = presence(service_name) || DEFAULT_SERVICE_NAME
+      @environment = presence(environment)
+      @flush_timeout = DEFAULT_FLUSH_TIMEOUT.to_f
+      @flush_interval = FLUSH_INTERVAL.to_f
+      @dropped = 0
+      @closed = false
+      @thread = nil
+      @mutex = nil
+      @enabled = false
+    end
+
     def presence(value)
       return nil if value.nil?
 
@@ -357,14 +406,12 @@ module Callisto
         )
       end
 
-      uri = begin
-        URI.parse(@endpoint)
-      rescue URI::InvalidURIError
-        nil
-      end
-      return if uri.is_a?(URI::HTTP) && !uri.host.to_s.empty?
+      return if Logger.secure_url?(@endpoint)
 
-      raise ValidationError.new("Callisto: logs_endpoint must be an absolute http(s) URL.")
+      raise ValidationError.new(
+        "Callisto: logs_endpoint must be an absolute https URL " \
+        "(http is accepted only for localhost, 127.0.0.1, ::1 and *.localhost)."
+      )
     end
 
     # Pre-serializes the resource and scope wrapping every batch.
@@ -401,7 +448,7 @@ module Callisto
         severityText: text,
         body: { stringValue: truncate(clean_string(message.to_s), MAX_BODY_CHARS) }
       }
-      kvs = key_values(attrs, 1, MAX_ATTRIBUTES)
+      kvs = key_values(attrs, 1, MAX_ATTRIBUTES, ValueBudget.new)
       record[:attributes] = kvs unless kvs.empty?
       record[:traceId] = trace_id unless trace_id.nil?
       record[:spanId] = span_id unless span_id.nil?
@@ -426,18 +473,42 @@ module Callisto
       value.downcase
     end
 
-    def key_values(hash, depth, limit = nil)
+    # The encoded values left for one record.
+    class ValueBudget
+      def initialize(left = MAX_RECORD_VALUES)
+        @left = left
+      end
+
+      def take
+        return false if @left <= 0
+
+        @left -= 1
+        true
+      end
+
+      def spent?
+        @left <= 0
+      end
+    end
+
+    def key_values(hash, depth, limit = nil, budget = ValueBudget.new)
       out = []
       hash.each do |key, value|
         break if limit && out.size >= limit
         next if value.nil?
 
-        out << { key: clean_string(key.to_s), value: any_value(value, depth) }
+        mapped = any_value(value, depth, budget)
+        break if mapped.nil? # budget spent: this and every later value are dropped
+
+        out << { key: clean_string(key.to_s), value: mapped }
       end
       out
     end
 
-    def any_value(value, depth)
+    # Maps a Ruby value to an OTLP AnyValue; nil once the record's value budget is spent.
+    def any_value(value, depth, budget = ValueBudget.new)
+      return nil unless budget.take
+
       case value
       when String, Symbol
         { stringValue: truncate(clean_string(value.to_s), MAX_ATTRIBUTE_CHARS) }
@@ -448,16 +519,35 @@ module Callisto
       when Float
         float_value(value)
       when Array
-        return stringified(value) if depth > MAX_DEPTH
+        return stringified(value, budget) if depth > MAX_DEPTH
 
-        { arrayValue: { values: value.map { |v| v.nil? ? {} : any_value(v, depth + 1) } } }
+        { arrayValue: { values: array_values(value, depth, budget) } }
       when Hash
-        return stringified(value) if depth > MAX_DEPTH
+        return stringified(value, budget) if depth > MAX_DEPTH
 
-        { kvlistValue: { values: key_values(value, depth + 1) } }
+        { kvlistValue: { values: key_values(value, depth + 1, MAX_NESTED_ITEMS, budget) } }
       else
-        stringified(value)
+        stringified(value, budget)
       end
+    end
+
+    def array_values(array, depth, budget)
+      values = []
+      array.each do |item|
+        break if values.size >= MAX_NESTED_ITEMS
+
+        if item.nil?
+          break unless budget.take
+
+          values << {}
+          next
+        end
+        mapped = any_value(item, depth + 1, budget)
+        break if mapped.nil?
+
+        values << mapped
+      end
+      values
     end
 
     def float_value(value)
@@ -467,13 +557,72 @@ module Callisto
       { doubleValue: value }
     end
 
-    def stringified(value)
+    def stringified(value, budget = ValueBudget.new)
       text = begin
-        value.is_a?(Array) || value.is_a?(Hash) ? JSON.generate(value) : value.to_s
+        value.is_a?(Array) || value.is_a?(Hash) ? bounded_json(value, budget) : value.to_s
       rescue StandardError
-        value.to_s
+        "#<#{value.class}>"
       end
       { stringValue: truncate(clean_string(text), MAX_ATTRIBUTE_CHARS) }
+    end
+
+    # JSON of a container nested too deep, written piece by piece instead of JSON.generate:
+    # every nested item takes one value from the record budget and the output stops past
+    # MAX_ATTRIBUTE_CHARS, so a shared or cyclic structure costs a bounded amount of work.
+    # A cut ends with "…".
+    def bounded_json(value, budget)
+      out = +""
+      active = {}.compare_by_identity
+      cut = false
+      write = lambda do |text|
+        throw :bounded_json_stop if out.length > MAX_ATTRIBUTE_CHARS
+
+        out << text
+      end
+      walk = lambda do |item, count|
+        if count && !budget.take
+          cut = true
+          throw :bounded_json_stop
+        end
+        unless item.is_a?(Array) || item.is_a?(Hash)
+          write.call(scalar_json(item))
+          next
+        end
+        if active.key?(item) || active.size >= 64
+          write.call(item.is_a?(Hash) ? "{}" : "[]")
+          next
+        end
+        active[item] = true
+        if item.is_a?(Hash)
+          write.call("{")
+          item.each_with_index do |(k, v), i|
+            write.call(",") if i.positive?
+            write.call(clean_string(k.to_s).to_json + ":")
+            walk.call(v, true)
+          end
+          write.call("}")
+        else
+          write.call("[")
+          item.each_with_index do |v, i|
+            write.call(",") if i.positive?
+            walk.call(v, true)
+          end
+          write.call("]")
+        end
+        active.delete(item)
+      end
+      catch(:bounded_json_stop) { walk.call(value, false) }
+      cut ? out + "…" : out
+    end
+
+    def scalar_json(item)
+      case item
+      when nil, true, false, Integer then JSON.generate(item)
+      when Float then item.finite? ? JSON.generate(item) : item.to_s.to_json
+      else clean_string(item.to_s).to_json
+      end
+    rescue StandardError
+      "#<#{item.class}>".to_json
     end
 
     # Ensures valid UTF-8 so JSON generation cannot fail on binary or broken strings.

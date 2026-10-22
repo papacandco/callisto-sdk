@@ -14,7 +14,7 @@ from .models import (
     MessageStatus, OtpStatus, OtpType, OtpProvider, WhatsAppMediaType,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = [
     "Client", "DEFAULT_BASE_URL", "ErrorReporter",
     "CallistoLogger", "CallistoLogHandler", "DEFAULT_LOGS_ENDPOINT",

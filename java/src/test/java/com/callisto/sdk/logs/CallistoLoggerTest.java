@@ -257,6 +257,104 @@ class CallistoLoggerTest {
         assertEquals("2", ints.get(1).get("intValue").asText());
     }
 
+    @Test
+    void nestedContainersAreCappedAt128Items() {
+        List<Object> big = new ArrayList<>();
+        Map<String, Object> bigMap = new LinkedHashMap<>();
+        for (int i = 0; i < 300; i++) {
+            big.add(i);
+            bigMap.put("k" + i, i);
+        }
+        int[] bigArray = new int[300];
+        JsonNode rec;
+        try (CallistoLogger logs = builder().build()) {
+            logs.info("v", attrs("list", big, "map", bigMap, "array", bigArray,
+                    "small", Arrays.asList(1, 2)));
+            rec = onlyRecord(logs);
+        }
+        Map<String, JsonNode> a = attrMap(rec);
+        JsonNode list = a.get("list").get("arrayValue").get("values");
+        assertEquals(OtlpEncoder.MAX_NESTED_ITEMS, list.size());
+        assertEquals("127", list.get(127).get("intValue").asText());
+        JsonNode map = a.get("map").get("kvlistValue").get("values");
+        assertEquals(OtlpEncoder.MAX_NESTED_ITEMS, map.size());
+        assertEquals("k127", map.get(127).get("key").asText());
+        assertEquals(OtlpEncoder.MAX_NESTED_ITEMS, a.get("array").get("arrayValue").get("values").size());
+        assertEquals(2, a.get("small").get("arrayValue").get("values").size());
+    }
+
+    private static int countValues(JsonNode anyValue) {
+        int n = 1;
+        if (anyValue.has("arrayValue")) {
+            for (JsonNode e : anyValue.get("arrayValue").get("values")) {
+                n += countValues(e);
+            }
+        } else if (anyValue.has("kvlistValue")) {
+            for (JsonNode kv : anyValue.get("kvlistValue").get("values")) {
+                n += countValues(kv.get("value"));
+            }
+        }
+        return n;
+    }
+
+    @Test
+    void sharedSubListsCannotExplodeTheRecord() {
+        for (int levels : new int[]{5, 12}) {
+            List<Object> leaf = new ArrayList<>();
+            for (int i = 0; i < 128; i++) {
+                leaf.add(i);
+            }
+            Object shared = leaf;
+            for (int l = 1; l < levels; l++) {
+                shared = Collections.nCopies(128, shared); // the same list, 128 times, per level
+            }
+            Map<String, Object> attributes = new LinkedHashMap<>();
+            attributes.put("a", shared);
+            attributes.put("b", Map.of("c", shared));
+            attributes.put("later", "dropped");
+            long start = System.nanoTime();
+            JsonNode rec = OtlpEncoder.record(T0, LogLevel.INFO, "bomb", attributes);
+            long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+            assertTrue(elapsedMs < 100, levels + " levels took " + elapsedMs + " ms");
+            int total = 0;
+            for (JsonNode kv : rec.get("attributes")) {
+                assertFalse("later".equals(kv.get("key").asText()), "later attributes are dropped");
+                total += countValues(kv.get("value"));
+            }
+            assertTrue(total > 0 && total <= OtlpEncoder.MAX_RECORD_VALUES, "values = " + total);
+        }
+    }
+
+    @Test
+    void valueBudgetDropsLaterAttributes() {
+        Map<String, Object> attributes = new LinkedHashMap<>();
+        for (int i = 0; i < 30; i++) {
+            attributes.put(String.format("k%02d", i), new int[100]);
+        }
+        JsonNode attrs = OtlpEncoder.record(T0, LogLevel.INFO, "m", attributes).get("attributes");
+        int total = 0;
+        for (JsonNode kv : attrs) {
+            total += countValues(kv.get("value"));
+        }
+        assertEquals(OtlpEncoder.MAX_RECORD_VALUES, total);
+        // 20 full arrays (20 x 101 = 2020 values), then the 21st is cut after 27 items.
+        assertEquals(21, attrs.size());
+        assertEquals(27, attrs.get(20).get("value").get("arrayValue").get("values").size());
+    }
+
+    @Test
+    void tooDeepContainerIsStringifiedWithinBounds() {
+        List<Object> huge = new ArrayList<>(Collections.nCopies(10_000, 0));
+        Object deep = attrs("l2", attrs("l3", attrs("l4", attrs("l5", attrs("l6", huge)))));
+        JsonNode v = OtlpEncoder.anyValue(deep, 1);
+        for (int i = 0; i < OtlpEncoder.MAX_DEPTH; i++) {
+            v = v.get("kvlistValue").get("values").get(0).get("value");
+        }
+        String s = v.get("stringValue").asText();
+        assertTrue(s.length() <= OtlpEncoder.MAX_ATTRIBUTE_CHARS, "length " + s.length());
+        assertTrue(s.startsWith("[0, 0, 0") && s.endsWith("…"), s.substring(0, 10));
+    }
+
     // 4. trace ids ---------------------------------------------------------------------------
 
     @Test

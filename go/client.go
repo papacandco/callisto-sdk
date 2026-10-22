@@ -3,7 +3,12 @@ package callisto
 import (
 	"context"
 	"fmt"
+	"log"
 )
+
+// logsWarnf is where NewClient reports invalid Logs settings (the standard
+// logger, so it follows log.SetOutput / slog.SetDefault).
+var logsWarnf = log.Printf
 
 // Client is the Callisto API client. Construct it with NewClient and access the
 // resources via the exported service fields. It is safe for concurrent use.
@@ -22,21 +27,25 @@ type Client struct {
 	// Notify accesses the notify resource.
 	Notify *NotifyService
 	// Logs ships log records to callisto-logs. It is built from the Logs*
-	// Options (or env vars) and is a no-op logger when no Logs key resolves.
+	// Options (or env vars) and is a no-op logger when no Logs key resolves,
+	// or when the Logs settings are invalid (one warning is logged).
 	Logs *Logger
 }
 
 // NewClient builds a Client from the given Options, applying environment-variable
 // fallbacks and defaults. It returns an error (never panics) when the required
-// credentials cannot be resolved.
+// messaging credentials cannot be resolved. It never fails because of the Logs
+// settings: invalid ones (half pair, malformed pk_/sk_, endpoint not https) log
+// one warning through the standard log package, without the key or the
+// secret, and client.Logs is a no-op logger.
 func NewClient(opts Options) (*Client, error) {
 	cfg, err := resolveConfig(opts)
 	if err != nil {
 		return nil, err
 	}
 
-	// Built before anything starts a goroutine, so a Logs configuration error
-	// leaks nothing. The messaging credentials are never passed to it.
+	// The messaging credentials are never passed to the logger. A Logs
+	// configuration error never breaks messaging.
 	logs, err := NewLogger(LoggerConfig{
 		AccessKey:    opts.LogsAccessKey,
 		Secret:       opts.LogsSecret,
@@ -47,7 +56,9 @@ func NewClient(opts Options) (*Client, error) {
 		Sender:       opts.LogSender,
 	})
 	if err != nil {
-		return nil, err
+		// The error text never carries the key or the secret.
+		logsWarnf("%v; logs are disabled", err)
+		logs = &Logger{}
 	}
 
 	reporter := newErrorReporter(cfg.errorDSN, cfg.environment, opts.ErrorSender)

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Net.Http;
 using System.Threading.Tasks;
 using Callisto.Sdk.Http;
@@ -48,8 +49,33 @@ public sealed class CallistoClient : IDisposable
     /// Log shipping to callisto-logs. A no-op logger unless a Logs key resolves (from the
     /// <c>logsAccessKey</c> / <c>logsSecret</c> arguments or <c>CALLISTO_LOGS_ACCESS_KEY</c> /
     /// <c>CALLISTO_LOGS_SECRET</c>). It never uses the messaging credentials or transport.
+    /// Invalid Logs settings (half pair, malformed key, endpoint not https) never make the client
+    /// throw: one warning goes to <see cref="Trace.TraceWarning(string)"/>, without the key or the
+    /// secret, and this is a disabled no-op logger.
     /// </summary>
     public CallistoLogger Logs { get; }
+
+    /// <summary>
+    /// Builds the client's logger. A Logs configuration error is traced once as a warning (the
+    /// message names the setting, never its value) and replaced by a disabled no-op logger.
+    /// </summary>
+    private static CallistoLogger BuildLogs(CallistoLoggerOptions options)
+    {
+        try
+        {
+            return new CallistoLogger(options);
+        }
+        catch (ArgumentException ex)
+        {
+            Trace.TraceWarning(ex.Message + " Logs are disabled.");
+            return new CallistoLogger(new CallistoLoggerOptions
+            {
+                Disabled = true,
+                ServiceName = options.ServiceName,
+                Environment = options.Environment,
+            });
+        }
+    }
 
     /// <summary>
     /// Creates a client. Any of <paramref name="clientId"/>, <paramref name="apiKey"/>, and
@@ -100,9 +126,8 @@ public sealed class CallistoClient : IDisposable
     {
         var config = Config.Resolve(clientId, apiKey, baseUrl, timeout, errorDsn, captureUnhandled, environment);
 
-        // Built before anything that starts a background task, so a Logs configuration error
-        // leaves nothing running behind the exception.
-        Logs = new CallistoLogger(new CallistoLoggerOptions
+        // A Logs configuration error never breaks messaging: one warning, then a no-op logger.
+        Logs = BuildLogs(new CallistoLoggerOptions
         {
             LogsAccessKey = logsAccessKey,
             LogsSecret = logsSecret,

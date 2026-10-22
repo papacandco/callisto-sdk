@@ -2,9 +2,9 @@ package com.callisto.sdk.reporting;
 
 import com.callisto.sdk.errors.CallistoException;
 import com.callisto.sdk.errors.RateLimitException;
+import com.callisto.sdk.http.SecureUrl;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -33,7 +33,7 @@ public final class ErrorReporter {
     /** SDK metadata reported under {@code context.sdk}. */
     public static final String SDK_NAME = "callisto-sdk";
     public static final String SDK_LANGUAGE = "java";
-    public static final String SDK_VERSION = "0.2.0";
+    public static final String SDK_VERSION = "0.3.0";
 
     private static final List<String> LEVELS = List.of("fatal", "error", "warning", "info");
 
@@ -113,16 +113,12 @@ public final class ErrorReporter {
                 System.getenv("CALLISTO_ENVIRONMENT"));
     }
 
+    /** https only ({@code http} on a loopback host); any other DSN leaves the reporter off. */
     private static boolean isValidDsn(String dsn) {
         if (dsn == null || dsn.trim().isEmpty()) {
             return false;
         }
-        try {
-            URI uri = URI.create(dsn.trim());
-            return uri.getScheme() != null && uri.getHost() != null;
-        } catch (RuntimeException e) {
-            return false;
-        }
+        return SecureUrl.isSecure(dsn.trim());
     }
 
     /** Whether the reporter is active (a valid DSN was supplied). */
