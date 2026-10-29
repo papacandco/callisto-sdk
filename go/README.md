@@ -110,7 +110,9 @@ msg, err := client.SMS.GetStatus(ctx, "message-id")
   — `POST /sms/send`. `To` is a slice; a single recipient is a one-element slice.
 - `SMS.List(ctx, ListSMSParams{StartedAt, EndedAt, Page, PerPage}) (*Paginated[SMSMessage], error)`
   — `GET /sms/messages`.
-- `SMS.GetStatus(ctx, messageID) (*SMSMessage, error)` — `GET /sms/{id}`.
+- `SMS.GetStatus(ctx, messageID) (*SMSMessage, error)` — `GET /sms/{id}`. An id that does not
+  exist, belongs to another organization or is not a UUID returns a `*NotFoundError` (HTTP 404),
+  the same in all three cases.
 
 ### OTP
 

@@ -180,6 +180,8 @@ for (SmsMessage msg : page.getItems()) {
 #### `sms().getStatus(String messageId)`
 
 Fetches a single SMS by ID. Maps to `GET /sms/{id}`. Returns [`SmsMessage`](#smsmessage).
+An id that does not exist, belongs to another organization or is not a UUID throws
+`NotFoundException` (HTTP 404), the same in all three cases.
 
 ```java
 SmsMessage msg = callisto.sms().getStatus("abc");

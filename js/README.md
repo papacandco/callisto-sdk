@@ -164,6 +164,8 @@ const msg = await client.sms.getStatus("sms_abc123");
 console.log(msg.status);
 ```
 
+An id that does not exist, belongs to another organization or is not a UUID throws [`NotFoundError`](#error-handling) (HTTP 404), the same in all three cases.
+
 ### `otp`
 
 #### `otp.send(params)` → [`SendOtpResult`](#sendotpresult)

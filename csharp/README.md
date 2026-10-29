@@ -177,6 +177,8 @@ var msg = callisto.Sms.GetStatus("abc");
 Console.WriteLine(msg.Status);
 ```
 
+An id that does not exist, belongs to another organization or is not a UUID throws `NotFoundException` (HTTP 404), the same in all three cases.
+
 ### Otp
 
 #### `Otp.Send(string to, string message, string? sender = null, int? expiredIn = null, OtpType? type = null, int? digitSize = null, OtpProvider? provider = null, string? instanceCode = null)`

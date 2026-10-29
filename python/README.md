@@ -203,6 +203,8 @@ msg = callisto.sms.get_status("abc")
 print(msg.status)
 ```
 
+An id that does not exist, belongs to another organization or is not a UUID raises [`NotFoundError`](#error-handling) (HTTP 404), the same in all three cases.
+
 ### otp
 
 #### `otp.send(to, message, sender=None, expired_in=None, type=None, digit_size=None, provider=None, instance_code=None)`
